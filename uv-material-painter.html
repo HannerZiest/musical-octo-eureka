@@ -1,0 +1,1409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>UV Material Painter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0c0c;
+    --panel: #161616;
+    --panel-2: #1d1d1d;
+    --border: #2a2a2a;
+    --border-light: #3a3a3a;
+    --text: #e8e8e8;
+    --muted: #777;
+    --muted-2: #555;
+    --accent: #ff6b1a;
+    --accent-dim: #b34a10;
+    --accent-glow: rgba(255, 107, 26, 0.15);
+    --danger: #ff3344;
+    --success: #4ade80;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow: hidden;
+    background-image:
+      radial-gradient(circle at 0% 0%, rgba(255, 107, 26, 0.04), transparent 40%),
+      radial-gradient(circle at 100% 100%, rgba(255, 107, 26, 0.02), transparent 40%);
+  }
+
+  .app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* HEADER */
+  header {
+    height: 48px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px;
+    gap: 16px;
+  }
+  .logo {
+    font-weight: 700; letter-spacing: 0.04em;
+    color: var(--accent);
+    text-transform: uppercase; font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .logo::before {
+    content: ''; width: 10px; height: 10px;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+  }
+  .stepper { display: flex; align-items: center; gap: 4px; flex: 1; justify-content: center; }
+  .step {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px;
+    color: var(--muted-2);
+    font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+  .step .num {
+    width: 18px; height: 18px;
+    border: 1px solid var(--border-light);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+  }
+  .step.active { color: var(--accent); }
+  .step.active .num { border-color: var(--accent); background: var(--accent-glow); color: var(--accent); }
+  .step.done { color: var(--text); }
+  .step.done .num { border-color: var(--success); color: var(--success); }
+  .step:hover { color: var(--text); }
+  .step-divider { width: 16px; height: 1px; background: var(--border); }
+
+  /* MAIN AREA */
+  main {
+    flex: 1; display: flex; overflow: hidden;
+  }
+  .stage {
+    flex: 1; display: none; overflow: hidden; position: relative;
+  }
+  .stage.active { display: flex; }
+
+  /* CENTER WORK AREA */
+  .work {
+    flex: 1; display: flex; align-items: center; justify-content: center;
+    padding: 24px; overflow: auto;
+    position: relative;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.015) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.015) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* SIDE PANEL */
+  .panel {
+    width: 320px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  .panel-section { padding: 16px; border-bottom: 1px solid var(--border); }
+  .panel-section h3 {
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--muted); margin-bottom: 12px;
+  }
+
+  /* DROPZONE */
+  .dropzone {
+    width: 520px; max-width: 80vw;
+    aspect-ratio: 1;
+    border: 1px dashed var(--border-light);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 16px; cursor: pointer;
+    transition: all 0.2s;
+    background: var(--panel);
+  }
+  .dropzone:hover, .dropzone.dragover {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .dropzone-icon {
+    font-size: 32px; color: var(--muted);
+    line-height: 1;
+  }
+  .dropzone:hover .dropzone-icon, .dropzone.dragover .dropzone-icon { color: var(--accent); }
+  .dropzone-title { font-size: 14px; font-weight: 600; }
+  .dropzone-hint { font-size: 11px; color: var(--muted); }
+  input[type=file] { display: none; }
+
+  /* BUTTONS */
+  button, .btn {
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 8px 14px; border: 1px solid var(--border-light);
+    background: var(--panel-2); color: var(--text);
+    cursor: pointer; transition: all 0.15s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  button:hover, .btn:hover { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button:disabled:hover { border-color: var(--border-light); color: var(--text); }
+  button.primary {
+    background: var(--accent); border-color: var(--accent); color: #0c0c0c;
+    font-weight: 700;
+  }
+  button.primary:hover { background: #ff8740; border-color: #ff8740; color: #0c0c0c; }
+  button.danger:hover { border-color: var(--danger); color: var(--danger); }
+  button.icon {
+    width: 28px; height: 28px; padding: 0;
+    justify-content: center;
+  }
+
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .footer-bar {
+    height: 56px; background: var(--panel);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px; gap: 8px;
+  }
+  .footer-bar .spacer { flex: 1; }
+  .footer-info {
+    font-size: 11px; color: var(--muted);
+  }
+
+  /* MATERIALS LIST */
+  .material-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px; border: 1px solid var(--border);
+    margin-bottom: 6px; background: var(--panel-2);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .material-row.active {
+    border-color: var(--accent); background: var(--accent-glow);
+  }
+  .material-row:hover { border-color: var(--border-light); }
+  .material-row.active:hover { border-color: var(--accent); }
+  .swatch {
+    width: 22px; height: 22px;
+    border: 1px solid var(--border-light); cursor: pointer;
+    position: relative; flex-shrink: 0;
+  }
+  .swatch input { position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+  .material-name {
+    flex: 1; background: transparent; border: none;
+    color: var(--text); font-family: var(--mono); font-size: 12px;
+    outline: none; padding: 4px 0;
+  }
+  .material-name:focus { color: var(--accent); }
+  .material-count {
+    font-size: 10px; color: var(--muted);
+    background: var(--bg); padding: 2px 6px;
+  }
+  .material-delete {
+    width: 22px; height: 22px; padding: 0;
+    justify-content: center;
+    border: 1px solid transparent;
+    background: transparent;
+  }
+  .material-delete:hover { border-color: var(--danger); color: var(--danger); }
+
+  /* CANVAS */
+  .canvas-wrap {
+    position: relative; display: inline-block;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    box-shadow: 0 0 60px rgba(0,0,0,0.5);
+  }
+  #drawCanvas {
+    display: block; cursor: crosshair;
+    max-width: 75vw; max-height: 75vh;
+  }
+  .canvas-overlay {
+    position: absolute; top: 8px; left: 8px;
+    font-size: 10px; color: var(--muted);
+    background: rgba(0,0,0,0.6);
+    padding: 4px 8px;
+    pointer-events: none;
+  }
+
+  /* SLIDERS / INPUTS */
+  .field { margin-bottom: 12px; }
+  .field label {
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }
+  .field label .val { color: var(--accent); }
+  input[type=range] {
+    width: 100%; appearance: none; height: 4px;
+    background: var(--panel-2); outline: none; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    appearance: none; width: 14px; height: 14px;
+    background: var(--accent); cursor: pointer;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 14px; height: 14px; background: var(--accent);
+    cursor: pointer; border: none; border-radius: 0;
+  }
+  select, input[type=text], input[type=number] {
+    width: 100%; background: var(--panel-2);
+    border: 1px solid var(--border); color: var(--text);
+    padding: 6px 8px; font-family: var(--mono); font-size: 12px;
+    outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+
+  /* TOGGLE */
+  .toggle {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; cursor: pointer;
+    margin-bottom: 8px;
+  }
+  .toggle input { display: none; }
+  .toggle-switch {
+    width: 28px; height: 14px;
+    background: var(--panel-2);
+    border: 1px solid var(--border-light);
+    position: relative; transition: all 0.15s;
+  }
+  .toggle-switch::after {
+    content: ''; width: 8px; height: 8px;
+    background: var(--muted); position: absolute;
+    top: 2px; left: 2px; transition: all 0.15s;
+  }
+  .toggle input:checked + .toggle-switch {
+    background: var(--accent-glow); border-color: var(--accent);
+  }
+  .toggle input:checked + .toggle-switch::after {
+    left: 16px; background: var(--accent);
+  }
+
+  /* ALBEDO UPLOAD */
+  .albedo-grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+  .albedo-card {
+    background: var(--panel); border: 1px solid var(--border);
+    padding: 12px;
+  }
+  .albedo-card-head {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 10px;
+  }
+  .albedo-card-head .name {
+    font-weight: 600; flex: 1; font-size: 12px;
+  }
+  .albedo-slot {
+    aspect-ratio: 1; border: 1px dashed var(--border-light);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; position: relative;
+    background: var(--bg);
+  }
+  .albedo-slot:hover { border-color: var(--accent); }
+  .albedo-slot.dragover { border-color: var(--accent); background: var(--accent-glow); }
+  .albedo-slot img {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover;
+  }
+  .albedo-slot .placeholder {
+    color: var(--muted); font-size: 10px; text-align: center;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+
+  /* MAP OUTPUT GRID */
+  .maps-grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(2, 1fr);
+    max-width: 900px; margin: 0 auto;
+  }
+  .map-card {
+    background: var(--panel); border: 1px solid var(--border);
+    overflow: hidden;
+  }
+  .map-card-head {
+    display: flex; align-items: center; padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  .map-card-head .label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    flex: 1;
+  }
+  .map-card-head .accent-label { color: var(--accent); }
+  .map-card canvas, .map-card img {
+    display: block; width: 100%; height: auto;
+    background: repeating-conic-gradient(#1a1a1a 0% 25%, #222 0% 50%) 50% / 16px 16px;
+  }
+
+  /* MESSAGES */
+  .empty-state {
+    text-align: center; color: var(--muted); padding: 40px;
+  }
+  .empty-state h2 { font-size: 14px; margin-bottom: 8px; color: var(--text); }
+  .empty-state p { font-size: 11px; }
+
+  /* SCROLLBARS */
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border-light); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+  /* TOOLBAR */
+  .toolbar {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px; background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+  .tool {
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); background: var(--panel-2);
+    cursor: pointer; font-size: 14px; color: var(--muted);
+    transition: all 0.15s;
+  }
+  .tool:hover { color: var(--text); border-color: var(--border-light); }
+  .tool.active { color: var(--accent); border-color: var(--accent); background: var(--accent-glow); }
+  .tool-divider { height: 1px; background: var(--border); margin: 4px 0; }
+
+  .toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--accent);
+    padding: 12px 20px; color: var(--accent);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    z-index: 1000; opacity: 0; transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">UV·PAINTER</div>
+    <div class="stepper">
+      <div class="step active" data-step="1"><span class="num">1</span><span>UV Layout</span></div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="2"><span class="num">2</span><span>Materials</span></div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="3"><span class="num">3</span><span>Draw Masks</span></div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="4"><span class="num">4</span><span>Albedos</span></div>
+      <div class="step-divider"></div>
+      <div class="step" data-step="5"><span class="num">5</span><span>Export</span></div>
+    </div>
+    <button class="btn" id="resetAll">Reset</button>
+  </header>
+
+  <main>
+
+    <!-- STEP 1: UPLOAD UV -->
+    <section class="stage active" data-stage="1">
+      <div class="work">
+        <div>
+          <div class="dropzone" id="uvDrop">
+            <div class="dropzone-icon">▦</div>
+            <div class="dropzone-title">Drop your UV layout here</div>
+            <div class="dropzone-hint">PNG / JPG · the flat unwrapped UV from Blender, Maya, etc.</div>
+            <div class="btn-row" style="margin-top:8px;">
+              <button class="btn" onclick="document.getElementById('uvFile').click()">Browse Files</button>
+            </div>
+            <input type="file" id="uvFile" accept="image/*">
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 2: MATERIALS -->
+    <section class="stage" data-stage="2">
+      <div class="work">
+        <div style="width: 480px; max-width: 90vw;">
+          <h2 style="font-size:14px; margin-bottom:8px;">Define your materials</h2>
+          <p style="font-size:11px; color: var(--muted); margin-bottom:20px;">
+            One row per surface type — wood, metal, fabric, whatever. Color is just for the mask preview.
+          </p>
+          <div id="materialsList"></div>
+          <button class="btn" id="addMaterial" style="margin-top: 8px;">+ Add Material</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3: DRAW -->
+    <section class="stage" data-stage="3">
+      <div class="toolbar">
+        <div class="tool active" data-tool="polygon" title="Polygon (P)">⬠</div>
+        <div class="tool" data-tool="erase" title="Delete shape (D)">⌫</div>
+        <div class="tool-divider"></div>
+        <div class="tool" id="undoBtn" title="Undo last point (Z)">↶</div>
+        <div class="tool" id="clearShapeBtn" title="Cancel current shape (Esc)">✕</div>
+      </div>
+      <div class="work">
+        <div class="canvas-wrap">
+          <canvas id="drawCanvas"></canvas>
+          <div class="canvas-overlay" id="canvasHint">
+            Click to add points · click first point or double-click to close · Esc to cancel
+          </div>
+        </div>
+      </div>
+      <aside class="panel">
+        <div class="panel-section">
+          <h3>Active Material</h3>
+          <div id="drawMaterialsList"></div>
+        </div>
+        <div class="panel-section">
+          <h3>Shapes (<span id="shapeCount">0</span>)</h3>
+          <div id="shapesList"></div>
+        </div>
+        <div class="panel-section">
+          <h3>Display</h3>
+          <div class="field">
+            <label>UV Opacity <span class="val" id="uvOpacityVal">100%</span></label>
+            <input type="range" id="uvOpacity" min="0" max="100" value="100">
+          </div>
+          <div class="field">
+            <label>Mask Opacity <span class="val" id="maskOpacityVal">50%</span></label>
+            <input type="range" id="maskOpacity" min="0" max="100" value="50">
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <!-- STEP 4: ALBEDOS -->
+    <section class="stage" data-stage="4">
+      <div class="work">
+        <div style="width: 100%; max-width: 880px;">
+          <h2 style="font-size:14px; margin-bottom:8px;">Upload material albedos</h2>
+          <p style="font-size:11px; color: var(--muted); margin-bottom:20px;">
+            One texture per material. Should tile seamlessly for best results.
+          </p>
+          <div class="albedo-grid" id="albedoGrid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 5: EXPORT -->
+    <section class="stage" data-stage="5">
+      <div class="work" style="flex-direction: column; align-items: stretch; padding: 24px 32px;">
+        <div style="display:flex; align-items:center; gap:16px; margin-bottom:20px;">
+          <div>
+            <h2 style="font-size:14px;">Generated PBR Maps</h2>
+            <p style="font-size:11px; color: var(--muted); margin-top:4px;">
+              Click any map to download · all maps are <span id="exportSize" style="color: var(--accent);">—</span>
+            </p>
+          </div>
+          <div style="flex:1;"></div>
+          <button class="primary" id="downloadAll">↓ Download All as ZIP-like</button>
+        </div>
+
+        <div class="maps-grid" id="mapsGrid"></div>
+      </div>
+      <aside class="panel">
+        <div class="panel-section">
+          <h3>Output Resolution</h3>
+          <div class="field">
+            <select id="exportRes">
+              <option value="512">512 × 512</option>
+              <option value="1024" selected>1024 × 1024</option>
+              <option value="2048">2048 × 2048</option>
+              <option value="4096">4096 × 4096</option>
+            </select>
+          </div>
+        </div>
+        <div class="panel-section">
+          <h3>Normal Map</h3>
+          <div class="field">
+            <label>Strength <span class="val" id="normalStrengthVal">2.0</span></label>
+            <input type="range" id="normalStrength" min="0" max="10" step="0.1" value="2">
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="invertY" checked>
+            <span class="toggle-switch"></span>
+            OpenGL convention (Blender) — invert Y
+          </label>
+        </div>
+        <div class="panel-section">
+          <h3>Roughness</h3>
+          <div class="field">
+            <label>Base <span class="val" id="roughnessBaseVal">0.5</span></label>
+            <input type="range" id="roughnessBase" min="0" max="1" step="0.01" value="0.5">
+          </div>
+          <div class="field">
+            <label>Contrast <span class="val" id="roughnessContrastVal">1.0</span></label>
+            <input type="range" id="roughnessContrast" min="0" max="3" step="0.05" value="1">
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="roughnessInvert">
+            <span class="toggle-switch"></span>
+            Invert (lighter = rougher)
+          </label>
+        </div>
+        <div class="panel-section">
+          <h3>Per-Material Metallic</h3>
+          <div id="metallicControls"></div>
+        </div>
+        <div class="panel-section">
+          <button class="primary" id="regenerate" style="width: 100%;">⟳ Regenerate Maps</button>
+        </div>
+      </aside>
+    </section>
+
+  </main>
+
+  <div class="footer-bar">
+    <button id="prevBtn">← Back</button>
+    <div class="spacer"></div>
+    <div class="footer-info" id="footerInfo">Step 1 of 5 — Upload your UV layout to begin</div>
+    <div class="spacer"></div>
+    <button class="primary" id="nextBtn">Next →</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// =========================================================================
+// STATE
+// =========================================================================
+const state = {
+  step: 1,
+  uvImage: null,
+  uvW: 0,
+  uvH: 0,
+  materials: [
+    { id: 1, name: 'Material A', color: '#ff6b1a', albedo: null, metallic: 0 },
+    { id: 2, name: 'Material B', color: '#4ade80', albedo: null, metallic: 0 },
+    { id: 3, name: 'Material C', color: '#3b82f6', albedo: null, metallic: 0 },
+  ],
+  nextMaterialId: 4,
+  shapes: [],         // { id, materialId, points: [[x,y],...] }
+  nextShapeId: 1,
+  currentShape: null, // points being drawn
+  activeMaterialId: 1,
+  tool: 'polygon',
+  uvOpacity: 1.0,
+  maskOpacity: 0.5,
+  hoveredShape: null,
+  // Export settings
+  exportRes: 1024,
+  normalStrength: 2.0,
+  invertY: true,
+  roughnessBase: 0.5,
+  roughnessContrast: 1.0,
+  roughnessInvert: false,
+  // Generated maps
+  outputAlbedo: null,
+  outputNormal: null,
+  outputRoughness: null,
+  outputMetallic: null,
+};
+
+// =========================================================================
+// UTILITIES
+// =========================================================================
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function pointInPolygon(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    const intersect = ((yi > pt[1]) !== (yj > pt[1])) &&
+      (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function dist(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function loadImageFromFile(file) {
+  return new Promise((res, rej) => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = rej;
+      img.src = e.target.result;
+    };
+    reader.onerror = rej;
+    reader.readAsDataURL(file);
+  });
+}
+
+// =========================================================================
+// STEP NAVIGATION
+// =========================================================================
+function setStep(n) {
+  if (n < 1 || n > 5) return;
+  // Validate
+  if (n >= 2 && !state.uvImage) { toast('Upload a UV layout first'); return; }
+  if (n >= 3 && state.materials.length === 0) { toast('Add at least one material'); return; }
+  if (n >= 5 && state.shapes.length === 0) { toast('Draw at least one mask shape'); return; }
+
+  state.step = n;
+  document.querySelectorAll('.stage').forEach(s => s.classList.remove('active'));
+  document.querySelector(`.stage[data-stage="${n}"]`).classList.add('active');
+  document.querySelectorAll('.step').forEach(s => {
+    const sn = parseInt(s.dataset.step);
+    s.classList.toggle('active', sn === n);
+    s.classList.toggle('done', sn < n);
+  });
+
+  document.getElementById('prevBtn').style.visibility = n === 1 ? 'hidden' : 'visible';
+  document.getElementById('nextBtn').textContent = n === 5 ? '✓ Done' : 'Next →';
+  document.getElementById('nextBtn').style.visibility = n === 5 ? 'hidden' : 'visible';
+
+  const messages = {
+    1: 'Step 1 of 5 — Upload your UV layout to begin',
+    2: 'Step 2 of 5 — Define one material per surface type',
+    3: 'Step 3 of 5 — Pick a material, click to draw polygon masks',
+    4: 'Step 4 of 5 — Upload an albedo for each material',
+    5: 'Step 5 of 5 — PBR maps generated. Download what you need.',
+  };
+  document.getElementById('footerInfo').textContent = messages[n];
+
+  if (n === 3) renderDrawStep();
+  if (n === 4) renderAlbedoStep();
+  if (n === 5) renderExportStep();
+}
+
+document.querySelectorAll('.step').forEach(s => {
+  s.addEventListener('click', () => setStep(parseInt(s.dataset.step)));
+});
+document.getElementById('prevBtn').addEventListener('click', () => setStep(state.step - 1));
+document.getElementById('nextBtn').addEventListener('click', () => setStep(state.step + 1));
+
+// =========================================================================
+// STEP 1: UPLOAD UV
+// =========================================================================
+const uvDrop = document.getElementById('uvDrop');
+const uvFile = document.getElementById('uvFile');
+
+uvDrop.addEventListener('click', () => uvFile.click());
+uvDrop.addEventListener('dragover', e => { e.preventDefault(); uvDrop.classList.add('dragover'); });
+uvDrop.addEventListener('dragleave', () => uvDrop.classList.remove('dragover'));
+uvDrop.addEventListener('drop', async e => {
+  e.preventDefault(); uvDrop.classList.remove('dragover');
+  const f = e.dataTransfer.files[0];
+  if (f) await handleUVUpload(f);
+});
+uvFile.addEventListener('change', async e => {
+  const f = e.target.files[0];
+  if (f) await handleUVUpload(f);
+});
+
+async function handleUVUpload(file) {
+  try {
+    const img = await loadImageFromFile(file);
+    state.uvImage = img;
+    state.uvW = img.width;
+    state.uvH = img.height;
+    toast(`UV loaded: ${img.width}×${img.height}`);
+    // Show preview in dropzone
+    uvDrop.innerHTML = `
+      <img src="${img.src}" style="max-width: 100%; max-height: 70%; object-fit: contain;">
+      <div class="dropzone-title" style="margin-top: 12px;">${file.name}</div>
+      <div class="dropzone-hint">${img.width} × ${img.height} · Click to change</div>
+    `;
+    setTimeout(() => setStep(2), 600);
+  } catch (e) {
+    toast('Failed to load image');
+  }
+}
+
+// =========================================================================
+// STEP 2: MATERIALS
+// =========================================================================
+function renderMaterials() {
+  const list = document.getElementById('materialsList');
+  list.innerHTML = '';
+  state.materials.forEach(m => {
+    const shapeCount = state.shapes.filter(s => s.materialId === m.id).length;
+    const row = document.createElement('div');
+    row.className = 'material-row';
+    row.innerHTML = `
+      <label class="swatch" style="background: ${m.color};">
+        <input type="color" value="${m.color}" data-mat-id="${m.id}" data-action="color">
+      </label>
+      <input class="material-name" value="${m.name}" data-mat-id="${m.id}" data-action="rename">
+      <span class="material-count">${shapeCount}</span>
+      <button class="material-delete" data-mat-id="${m.id}" data-action="delete" title="Delete">×</button>
+    `;
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('addMaterial').addEventListener('click', () => {
+  const palette = ['#ff6b1a','#4ade80','#3b82f6','#a855f7','#eab308','#ec4899','#06b6d4','#f97316'];
+  const idx = state.materials.length % palette.length;
+  state.materials.push({
+    id: state.nextMaterialId++,
+    name: `Material ${String.fromCharCode(65 + state.materials.length)}`,
+    color: palette[idx],
+    albedo: null,
+    metallic: 0,
+  });
+  renderMaterials();
+});
+
+document.getElementById('materialsList').addEventListener('input', e => {
+  const id = parseInt(e.target.dataset.matId);
+  const action = e.target.dataset.action;
+  const m = state.materials.find(m => m.id === id);
+  if (!m) return;
+  if (action === 'color') {
+    m.color = e.target.value;
+    e.target.parentElement.style.background = m.color;
+  } else if (action === 'rename') {
+    m.name = e.target.value;
+  }
+});
+
+document.getElementById('materialsList').addEventListener('click', e => {
+  if (e.target.dataset.action === 'delete') {
+    const id = parseInt(e.target.dataset.matId);
+    if (state.materials.length === 1) { toast('Need at least one material'); return; }
+    state.materials = state.materials.filter(m => m.id !== id);
+    state.shapes = state.shapes.filter(s => s.materialId !== id);
+    if (state.activeMaterialId === id) state.activeMaterialId = state.materials[0].id;
+    renderMaterials();
+  }
+});
+
+renderMaterials();
+
+// =========================================================================
+// STEP 3: DRAW MASKS
+// =========================================================================
+const drawCanvas = document.getElementById('drawCanvas');
+const dctx = drawCanvas.getContext('2d');
+const SNAP_DIST = 12;
+
+function renderDrawStep() {
+  if (!state.uvImage) return;
+  // Set canvas to image size, will be scaled via CSS
+  drawCanvas.width = state.uvW;
+  drawCanvas.height = state.uvH;
+  renderDrawMaterials();
+  renderShapesList();
+  redrawCanvas();
+}
+
+function renderDrawMaterials() {
+  const list = document.getElementById('drawMaterialsList');
+  list.innerHTML = '';
+  state.materials.forEach(m => {
+    const shapeCount = state.shapes.filter(s => s.materialId === m.id).length;
+    const row = document.createElement('div');
+    row.className = 'material-row' + (state.activeMaterialId === m.id ? ' active' : '');
+    row.innerHTML = `
+      <span class="swatch" style="background: ${m.color}; cursor: default;"></span>
+      <span class="material-name" style="cursor:pointer;">${m.name}</span>
+      <span class="material-count">${shapeCount}</span>
+    `;
+    row.addEventListener('click', () => {
+      state.activeMaterialId = m.id;
+      renderDrawMaterials();
+    });
+    list.appendChild(row);
+  });
+}
+
+function renderShapesList() {
+  const list = document.getElementById('shapesList');
+  document.getElementById('shapeCount').textContent = state.shapes.length;
+  list.innerHTML = '';
+  if (state.shapes.length === 0) {
+    list.innerHTML = '<div style="font-size:11px; color:var(--muted-2); padding: 8px 0;">No shapes yet.</div>';
+    return;
+  }
+  state.shapes.forEach((s, i) => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m) return;
+    const row = document.createElement('div');
+    row.className = 'material-row';
+    row.style.cursor = 'default';
+    row.innerHTML = `
+      <span class="swatch" style="background: ${m.color}; cursor: default;"></span>
+      <span style="flex:1; font-size: 11px;">Shape ${i + 1} · ${m.name}</span>
+      <span class="material-count">${s.points.length}pt</span>
+      <button class="material-delete" data-shape-id="${s.id}" title="Delete shape">×</button>
+    `;
+    row.querySelector('.material-delete').addEventListener('click', () => {
+      state.shapes = state.shapes.filter(ss => ss.id !== s.id);
+      renderShapesList();
+      renderDrawMaterials();
+      redrawCanvas();
+    });
+    row.addEventListener('mouseenter', () => { state.hoveredShape = s.id; redrawCanvas(); });
+    row.addEventListener('mouseleave', () => { state.hoveredShape = null; redrawCanvas(); });
+    list.appendChild(row);
+  });
+}
+
+function redrawCanvas() {
+  if (!state.uvImage) return;
+  const c = drawCanvas;
+  const ctx = dctx;
+  ctx.clearRect(0, 0, c.width, c.height);
+
+  // BG checkerboard for transparency-aware look
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // UV image
+  ctx.globalAlpha = state.uvOpacity;
+  ctx.drawImage(state.uvImage, 0, 0, c.width, c.height);
+  ctx.globalAlpha = 1;
+
+  // Existing shapes
+  state.shapes.forEach(s => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m || s.points.length < 2) return;
+    ctx.globalAlpha = state.maskOpacity;
+    ctx.fillStyle = m.color;
+    ctx.beginPath();
+    ctx.moveTo(s.points[0][0], s.points[0][1]);
+    for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i][0], s.points[i][1]);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // Stroke
+    ctx.strokeStyle = m.color;
+    ctx.lineWidth = s.id === state.hoveredShape ? 4 : 2;
+    ctx.stroke();
+  });
+
+  // In-progress shape
+  if (state.currentShape && state.currentShape.length > 0) {
+    const m = state.materials.find(mm => mm.id === state.activeMaterialId);
+    const color = m ? m.color : '#ff6b1a';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.fillStyle = color;
+
+    ctx.beginPath();
+    ctx.moveTo(state.currentShape[0][0], state.currentShape[0][1]);
+    for (let i = 1; i < state.currentShape.length; i++) {
+      ctx.lineTo(state.currentShape[i][0], state.currentShape[i][1]);
+    }
+    ctx.stroke();
+
+    // Vertices
+    state.currentShape.forEach((pt, i) => {
+      ctx.beginPath();
+      const r = (i === 0) ? 8 : 4;
+      ctx.arc(pt[0], pt[1], r, 0, Math.PI * 2);
+      if (i === 0) {
+        ctx.strokeStyle = color; ctx.lineWidth = 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fill(); ctx.stroke();
+      } else {
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+    });
+  }
+}
+
+function canvasCoords(e) {
+  const rect = drawCanvas.getBoundingClientRect();
+  const x = (e.clientX - rect.left) * (drawCanvas.width / rect.width);
+  const y = (e.clientY - rect.top) * (drawCanvas.height / rect.height);
+  return [x, y];
+}
+
+drawCanvas.addEventListener('click', e => {
+  if (state.tool !== 'polygon') return;
+  const pt = canvasCoords(e);
+
+  if (!state.currentShape) state.currentShape = [];
+
+  // Close on first point
+  if (state.currentShape.length >= 3) {
+    const first = state.currentShape[0];
+    const rect = drawCanvas.getBoundingClientRect();
+    const screenScale = drawCanvas.width / rect.width;
+    if (dist(pt, first) < SNAP_DIST * screenScale) {
+      finishShape();
+      return;
+    }
+  }
+  state.currentShape.push(pt);
+  redrawCanvas();
+});
+
+drawCanvas.addEventListener('dblclick', () => {
+  if (state.currentShape && state.currentShape.length >= 3) finishShape();
+});
+
+function finishShape() {
+  if (!state.currentShape || state.currentShape.length < 3) return;
+  state.shapes.push({
+    id: state.nextShapeId++,
+    materialId: state.activeMaterialId,
+    points: state.currentShape,
+  });
+  state.currentShape = null;
+  renderShapesList();
+  renderDrawMaterials();
+  redrawCanvas();
+}
+
+// Erase tool: click inside shape to delete
+drawCanvas.addEventListener('click', e => {
+  if (state.tool !== 'erase') return;
+  const pt = canvasCoords(e);
+  for (let i = state.shapes.length - 1; i >= 0; i--) {
+    if (pointInPolygon(pt, state.shapes[i].points)) {
+      state.shapes.splice(i, 1);
+      renderShapesList();
+      renderDrawMaterials();
+      redrawCanvas();
+      return;
+    }
+  }
+});
+
+// Tool selection
+document.querySelectorAll('.tool[data-tool]').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tool').forEach(tt => tt.classList.remove('active'));
+    t.classList.add('active');
+    state.tool = t.dataset.tool;
+    drawCanvas.style.cursor = state.tool === 'erase' ? 'not-allowed' : 'crosshair';
+    if (state.tool !== 'polygon') state.currentShape = null;
+    redrawCanvas();
+  });
+});
+
+document.getElementById('undoBtn').addEventListener('click', () => {
+  if (state.currentShape && state.currentShape.length > 0) {
+    state.currentShape.pop();
+    if (state.currentShape.length === 0) state.currentShape = null;
+    redrawCanvas();
+  } else if (state.shapes.length > 0) {
+    state.shapes.pop();
+    renderShapesList();
+    renderDrawMaterials();
+    redrawCanvas();
+  }
+});
+document.getElementById('clearShapeBtn').addEventListener('click', () => {
+  state.currentShape = null;
+  redrawCanvas();
+});
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (state.step !== 3) return;
+  if (e.target.tagName === 'INPUT') return;
+  if (e.key === 'Escape') { state.currentShape = null; redrawCanvas(); }
+  else if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    document.getElementById('undoBtn').click();
+  }
+});
+
+// Opacity sliders
+document.getElementById('uvOpacity').addEventListener('input', e => {
+  state.uvOpacity = e.target.value / 100;
+  document.getElementById('uvOpacityVal').textContent = e.target.value + '%';
+  redrawCanvas();
+});
+document.getElementById('maskOpacity').addEventListener('input', e => {
+  state.maskOpacity = e.target.value / 100;
+  document.getElementById('maskOpacityVal').textContent = e.target.value + '%';
+  redrawCanvas();
+});
+
+// =========================================================================
+// STEP 4: ALBEDOS
+// =========================================================================
+function renderAlbedoStep() {
+  const grid = document.getElementById('albedoGrid');
+  grid.innerHTML = '';
+  state.materials.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'albedo-card';
+    card.innerHTML = `
+      <div class="albedo-card-head">
+        <span class="swatch" style="background: ${m.color}; cursor:default;"></span>
+        <span class="name">${m.name}</span>
+      </div>
+      <label class="albedo-slot" data-mat-id="${m.id}">
+        ${m.albedo
+          ? `<img src="${m.albedo.src}">`
+          : `<span class="placeholder">Drop / Click<br>to upload</span>`}
+        <input type="file" accept="image/*" style="display:none;" data-mat-id="${m.id}">
+      </label>
+    `;
+    grid.appendChild(card);
+  });
+
+  grid.querySelectorAll('input[type=file]').forEach(input => {
+    input.addEventListener('change', async e => {
+      const id = parseInt(e.target.dataset.matId);
+      const f = e.target.files[0];
+      if (!f) return;
+      const img = await loadImageFromFile(f);
+      const m = state.materials.find(m => m.id === id);
+      m.albedo = img;
+      renderAlbedoStep();
+    });
+  });
+  grid.querySelectorAll('.albedo-slot').forEach(slot => {
+    slot.addEventListener('dragover', e => { e.preventDefault(); slot.classList.add('dragover'); });
+    slot.addEventListener('dragleave', () => slot.classList.remove('dragover'));
+    slot.addEventListener('drop', async e => {
+      e.preventDefault(); slot.classList.remove('dragover');
+      const id = parseInt(slot.dataset.matId);
+      const f = e.dataTransfer.files[0];
+      if (!f) return;
+      const img = await loadImageFromFile(f);
+      const m = state.materials.find(m => m.id === id);
+      m.albedo = img;
+      renderAlbedoStep();
+    });
+  });
+}
+
+// =========================================================================
+// STEP 5: EXPORT — generate PBR maps
+// =========================================================================
+function renderExportStep() {
+  const grid = document.getElementById('mapsGrid');
+  document.getElementById('exportSize').textContent = state.exportRes + ' × ' + state.exportRes;
+
+  // Build metallic controls
+  const metCtrls = document.getElementById('metallicControls');
+  metCtrls.innerHTML = '';
+  state.materials.forEach(m => {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    wrap.innerHTML = `
+      <label>
+        <span style="display:flex; align-items:center; gap:6px;">
+          <span class="swatch" style="background:${m.color}; width:12px; height:12px;"></span>
+          ${m.name}
+        </span>
+        <span class="val" data-met-id="${m.id}">${m.metallic.toFixed(2)}</span>
+      </label>
+      <input type="range" min="0" max="1" step="0.01" value="${m.metallic}" data-met-id="${m.id}">
+    `;
+    metCtrls.appendChild(wrap);
+  });
+  metCtrls.querySelectorAll('input').forEach(inp => {
+    inp.addEventListener('input', e => {
+      const id = parseInt(e.target.dataset.metId);
+      const m = state.materials.find(m => m.id === id);
+      m.metallic = parseFloat(e.target.value);
+      metCtrls.querySelector(`.val[data-met-id="${id}"]`).textContent = m.metallic.toFixed(2);
+    });
+  });
+
+  generateMaps();
+}
+
+document.getElementById('exportRes').addEventListener('change', e => {
+  state.exportRes = parseInt(e.target.value);
+  document.getElementById('exportSize').textContent = state.exportRes + ' × ' + state.exportRes;
+});
+document.getElementById('normalStrength').addEventListener('input', e => {
+  state.normalStrength = parseFloat(e.target.value);
+  document.getElementById('normalStrengthVal').textContent = state.normalStrength.toFixed(1);
+});
+document.getElementById('invertY').addEventListener('change', e => { state.invertY = e.target.checked; });
+document.getElementById('roughnessBase').addEventListener('input', e => {
+  state.roughnessBase = parseFloat(e.target.value);
+  document.getElementById('roughnessBaseVal').textContent = state.roughnessBase.toFixed(2);
+});
+document.getElementById('roughnessContrast').addEventListener('input', e => {
+  state.roughnessContrast = parseFloat(e.target.value);
+  document.getElementById('roughnessContrastVal').textContent = state.roughnessContrast.toFixed(2);
+});
+document.getElementById('roughnessInvert').addEventListener('change', e => { state.roughnessInvert = e.target.checked; });
+document.getElementById('regenerate').addEventListener('click', generateMaps);
+
+function generateMaps() {
+  const size = state.exportRes;
+
+  // Compute scale from UV-space to output-space
+  const sx = size / state.uvW;
+  const sy = size / state.uvH;
+
+  // ALBEDO output
+  const albedo = document.createElement('canvas');
+  albedo.width = size; albedo.height = size;
+  const aCtx = albedo.getContext('2d');
+  aCtx.fillStyle = '#000';
+  aCtx.fillRect(0, 0, size, size);
+
+  // For each shape, clip to polygon and fill with material's albedo (tiled)
+  state.shapes.forEach(s => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m) return;
+    aCtx.save();
+    aCtx.beginPath();
+    aCtx.moveTo(s.points[0][0] * sx, s.points[0][1] * sy);
+    for (let i = 1; i < s.points.length; i++) {
+      aCtx.lineTo(s.points[i][0] * sx, s.points[i][1] * sy);
+    }
+    aCtx.closePath();
+    aCtx.clip();
+    if (m.albedo) {
+      const pattern = aCtx.createPattern(m.albedo, 'repeat');
+      aCtx.fillStyle = pattern;
+      aCtx.fillRect(0, 0, size, size);
+    } else {
+      aCtx.fillStyle = m.color;
+      aCtx.fillRect(0, 0, size, size);
+    }
+    aCtx.restore();
+  });
+
+  state.outputAlbedo = albedo;
+
+  // NORMAL output — composite per-shape normal maps generated from each albedo
+  const normal = document.createElement('canvas');
+  normal.width = size; normal.height = size;
+  const nCtx = normal.getContext('2d');
+  // Default flat normal (128,128,255)
+  nCtx.fillStyle = 'rgb(128,128,255)';
+  nCtx.fillRect(0, 0, size, size);
+
+  // Pre-generate normal map for each material with an albedo
+  const materialNormals = {};
+  state.materials.forEach(m => {
+    if (m.albedo) {
+      materialNormals[m.id] = generateNormalFromImage(m.albedo, state.normalStrength, state.invertY);
+    }
+  });
+
+  state.shapes.forEach(s => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m) return;
+    nCtx.save();
+    nCtx.beginPath();
+    nCtx.moveTo(s.points[0][0] * sx, s.points[0][1] * sy);
+    for (let i = 1; i < s.points.length; i++) nCtx.lineTo(s.points[i][0] * sx, s.points[i][1] * sy);
+    nCtx.closePath();
+    nCtx.clip();
+    if (materialNormals[m.id]) {
+      const pattern = nCtx.createPattern(materialNormals[m.id], 'repeat');
+      nCtx.fillStyle = pattern;
+      nCtx.fillRect(0, 0, size, size);
+    } else {
+      nCtx.fillStyle = 'rgb(128,128,255)';
+      nCtx.fillRect(0, 0, size, size);
+    }
+    nCtx.restore();
+  });
+  state.outputNormal = normal;
+
+  // ROUGHNESS — derive from albedo per material
+  const roughness = document.createElement('canvas');
+  roughness.width = size; roughness.height = size;
+  const rCtx = roughness.getContext('2d');
+  const rBase = Math.round(state.roughnessBase * 255);
+  rCtx.fillStyle = `rgb(${rBase},${rBase},${rBase})`;
+  rCtx.fillRect(0, 0, size, size);
+
+  const materialRoughness = {};
+  state.materials.forEach(m => {
+    if (m.albedo) {
+      materialRoughness[m.id] = generateRoughnessFromImage(
+        m.albedo, state.roughnessBase, state.roughnessContrast, state.roughnessInvert);
+    }
+  });
+  state.shapes.forEach(s => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m) return;
+    rCtx.save();
+    rCtx.beginPath();
+    rCtx.moveTo(s.points[0][0] * sx, s.points[0][1] * sy);
+    for (let i = 1; i < s.points.length; i++) rCtx.lineTo(s.points[i][0] * sx, s.points[i][1] * sy);
+    rCtx.closePath();
+    rCtx.clip();
+    if (materialRoughness[m.id]) {
+      const pattern = rCtx.createPattern(materialRoughness[m.id], 'repeat');
+      rCtx.fillStyle = pattern;
+      rCtx.fillRect(0, 0, size, size);
+    }
+    rCtx.restore();
+  });
+  state.outputRoughness = roughness;
+
+  // METALLIC — per material flat value
+  const metallic = document.createElement('canvas');
+  metallic.width = size; metallic.height = size;
+  const mCtx = metallic.getContext('2d');
+  mCtx.fillStyle = '#000';
+  mCtx.fillRect(0, 0, size, size);
+  state.shapes.forEach(s => {
+    const m = state.materials.find(mm => mm.id === s.materialId);
+    if (!m) return;
+    const v = Math.round(m.metallic * 255);
+    mCtx.save();
+    mCtx.beginPath();
+    mCtx.moveTo(s.points[0][0] * sx, s.points[0][1] * sy);
+    for (let i = 1; i < s.points.length; i++) mCtx.lineTo(s.points[i][0] * sx, s.points[i][1] * sy);
+    mCtx.closePath();
+    mCtx.clip();
+    mCtx.fillStyle = `rgb(${v},${v},${v})`;
+    mCtx.fillRect(0, 0, size, size);
+    mCtx.restore();
+  });
+  state.outputMetallic = metallic;
+
+  // Display in grid
+  const grid = document.getElementById('mapsGrid');
+  grid.innerHTML = '';
+  const maps = [
+    { label: 'ALBEDO', accent: false, canvas: albedo, filename: 'albedo.png' },
+    { label: 'NORMAL', accent: false, canvas: normal, filename: 'normal.png' },
+    { label: 'ROUGHNESS', accent: false, canvas: roughness, filename: 'roughness.png' },
+    { label: 'METALLIC', accent: false, canvas: metallic, filename: 'metallic.png' },
+  ];
+  maps.forEach(m => {
+    const card = document.createElement('div');
+    card.className = 'map-card';
+    card.innerHTML = `
+      <div class="map-card-head">
+        <span class="label accent-label">${m.label}</span>
+        <button class="btn" data-fn="${m.filename}">↓ Download</button>
+      </div>
+    `;
+    card.appendChild(m.canvas);
+    m.canvas.style.cssText = 'display:block; width:100%; height:auto;';
+    card.querySelector('button').addEventListener('click', () => downloadCanvas(m.canvas, m.filename));
+    grid.appendChild(card);
+  });
+}
+
+// Sobel-based normal from grayscale of albedo
+function generateNormalFromImage(img, strength, invertY) {
+  const w = img.width, h = img.height;
+  const src = document.createElement('canvas');
+  src.width = w; src.height = h;
+  const sctx = src.getContext('2d');
+  sctx.drawImage(img, 0, 0);
+  const data = sctx.getImageData(0, 0, w, h).data;
+
+  // Grayscale buffer
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = (data[i*4] * 0.299 + data[i*4+1] * 0.587 + data[i*4+2] * 0.114) / 255;
+  }
+
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const outData = octx.createImageData(w, h);
+
+  function gAt(x, y) {
+    x = Math.max(0, Math.min(w - 1, x));
+    y = Math.max(0, Math.min(h - 1, y));
+    return gray[y * w + x];
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      // Sobel
+      const tl = gAt(x-1,y-1), t = gAt(x,y-1), tr = gAt(x+1,y-1);
+      const l = gAt(x-1,y),                       r = gAt(x+1,y);
+      const bl = gAt(x-1,y+1), b = gAt(x,y+1), br = gAt(x+1,y+1);
+      const dX = (tr + 2*r + br) - (tl + 2*l + bl);
+      const dY = (bl + 2*b + br) - (tl + 2*t + tr);
+      let nx = -dX * strength;
+      let ny = -dY * strength;
+      if (invertY) ny = -ny;
+      let nz = 1;
+      const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+      nx /= len; ny /= len; nz /= len;
+      const i = (y * w + x) * 4;
+      outData.data[i]   = Math.round((nx * 0.5 + 0.5) * 255);
+      outData.data[i+1] = Math.round((ny * 0.5 + 0.5) * 255);
+      outData.data[i+2] = Math.round((nz * 0.5 + 0.5) * 255);
+      outData.data[i+3] = 255;
+    }
+  }
+  octx.putImageData(outData, 0, 0);
+  return out;
+}
+
+// Roughness derived from luminance of albedo
+function generateRoughnessFromImage(img, base, contrast, invert) {
+  const w = img.width, h = img.height;
+  const src = document.createElement('canvas');
+  src.width = w; src.height = h;
+  const sctx = src.getContext('2d');
+  sctx.drawImage(img, 0, 0);
+  const data = sctx.getImageData(0, 0, w, h).data;
+  const out = document.createElement('canvas');
+  out.width = w; out.height = h;
+  const octx = out.getContext('2d');
+  const outData = octx.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const lum = data[i*4] * 0.299 + data[i*4+1] * 0.587 + data[i*4+2] * 0.114;
+    let v = lum / 255;
+    if (invert) v = 1 - v;
+    // Apply contrast around 0.5, then blend to base
+    v = (v - 0.5) * contrast + 0.5;
+    v = base + (v - 0.5) * 0.5; // gentle base shift
+    v = Math.max(0, Math.min(1, v));
+    const b = Math.round(v * 255);
+    outData.data[i*4]   = b;
+    outData.data[i*4+1] = b;
+    outData.data[i*4+2] = b;
+    outData.data[i*4+3] = 255;
+  }
+  octx.putImageData(outData, 0, 0);
+  return out;
+}
+
+function downloadCanvas(canvas, filename) {
+  canvas.toBlob(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }, 'image/png');
+}
+
+document.getElementById('downloadAll').addEventListener('click', () => {
+  // Sequential downloads — browsers will throttle but each will fire
+  const maps = [
+    { c: state.outputAlbedo, n: 'albedo.png' },
+    { c: state.outputNormal, n: 'normal.png' },
+    { c: state.outputRoughness, n: 'roughness.png' },
+    { c: state.outputMetallic, n: 'metallic.png' },
+  ];
+  maps.forEach((m, i) => setTimeout(() => downloadCanvas(m.c, m.n), i * 250));
+  toast('Downloading 4 maps…');
+});
+
+// =========================================================================
+// RESET
+// =========================================================================
+document.getElementById('resetAll').addEventListener('click', () => {
+  if (!confirm('Reset everything?')) return;
+  location.reload();
+});
+</script>
+</body>
+</html>
