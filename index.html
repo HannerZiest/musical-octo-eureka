@@ -1193,22 +1193,54 @@ function closePolygon() {
 
   const t0 = performance.now();
 
-  // 1. Centroid of clicked 3D points
+  // 1. Centroid of clicked 3D points (just used for seed selection now)
   const centroid = new THREE.Vector3();
   for (const h of state.hits) centroid.add(h.worldPos);
   centroid.divideScalar(state.hits.length);
 
-  // 2. Find seed: nearest welded vertex to centroid (brute force, N=~640, fast)
-  let seedIdx = -1;
-  let bestD = Infinity;
-  for (let i = 0; i < meshGraph.positions.length; i++) {
-    const d = meshGraph.positions[i].distanceToSquared(centroid);
-    if (d < bestD) { bestD = d; seedIdx = i; }
+  // 2. Pick seed: find the click whose 3D position is nearest the centroid,
+  //    then use its hit triangle's closest welded vertex. This guarantees
+  //    the seed lives on the surface the user actually clicked, not on some
+  //    nearby surface that happens to share 3D space (mattress vs frame).
+  let bestClickIdx = 0;
+  let bestClickDistSq = Infinity;
+  for (let i = 0; i < state.hits.length; i++) {
+    const d = state.hits[i].worldPos.distanceToSquared(centroid);
+    if (d < bestClickDistSq) { bestClickDistSq = d; bestClickIdx = i; }
   }
-  polygonState.expMapSeed = seedIdx;
+  const seedClick = state.hits[bestClickIdx];
+  {
+    const baseOffset = meshGraph.meshOffsets[seedClick.meshIndex];
+    const wa = meshGraph.renderToWelded[baseOffset + seedClick.triangleVertA];
+    const wb = meshGraph.renderToWelded[baseOffset + seedClick.triangleVertB];
+    const wc = meshGraph.renderToWelded[baseOffset + seedClick.triangleVertC];
+    const da = meshGraph.positions[wa].distanceToSquared(seedClick.worldPos);
+    const db = meshGraph.positions[wb].distanceToSquared(seedClick.worldPos);
+    const dc = meshGraph.positions[wc].distanceToSquared(seedClick.worldPos);
+    if (da <= db && da <= dc) polygonState.expMapSeed = wa;
+    else if (db <= dc) polygonState.expMapSeed = wb;
+    else polygonState.expMapSeed = wc;
+  }
+  const seedIdx = polygonState.expMapSeed;
+  const seedPos = meshGraph.positions[seedIdx];
 
-  // 3. Run exp map (no radius limit — we want the whole model parameterized)
-  computeExpMap(seedIdx, Infinity);
+  // 3. Determine a tight radius for the exp map: enough to cover all polygon
+  //    points and triangles between them, but small enough that distortion
+  //    stays local. Use Euclidean distance as a lower bound on geodesic
+  //    distance, then multiply by a generous safety factor.
+  let maxClickDist = 0;
+  for (const h of state.hits) {
+    const d = h.worldPos.distanceTo(seedPos);
+    if (d > maxClickDist) maxClickDist = d;
+  }
+  // Model scale for a tiny epsilon (in case the polygon is degenerately small)
+  const bbox = new THREE.Box3();
+  for (const p of meshGraph.positions) bbox.expandByPoint(p);
+  const modelSize = bbox.getSize(new THREE.Vector3()).length();
+  const radius = maxClickDist * 2.5 + modelSize * 0.001;
+
+  // 4. Run exp map with the local radius
+  computeExpMap(seedIdx, radius);
 
   // 4. Compute 2D position for each polygon vertex via barycentric interp
   const polygonVerts2D = [];
