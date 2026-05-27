@@ -171,10 +171,11 @@
 <div class="app">
   <header>
     <div class="logo">UV·PAINTER</div>
-    <div class="phase-badge">Phase 1 — 3D Foundation</div>
+    <div class="phase-badge">Phase 2 — Discrete Exp Map</div>
     <div class="header-actions">
       <button id="loadBtn">Load Model</button>
       <button id="clearHits">Clear Hits</button>
+      <button id="toggleVizBtn">Hide Distance Viz</button>
       <input type="file" id="fileInput" accept=".obj,.glb,.gltf">
     </div>
   </header>
@@ -212,6 +213,17 @@
           <div class="info-row"><span class="key">World Pos</span><span class="val" id="info-world">—</span></div>
           <div class="info-row"><span class="key">UV</span><span class="val accent" id="info-uv">—</span></div>
           <div class="info-row"><span class="key">Barycentric</span><span class="val" id="info-bary">—</span></div>
+        </div>
+        <div class="info-section">
+          <h3>Exp Map (Schmidt 2006)</h3>
+          <div class="info-row"><span class="key">Welded Verts</span><span class="val" id="info-welded">—</span></div>
+          <div class="info-row"><span class="key">Graph Edges</span><span class="val" id="info-edges">—</span></div>
+          <div class="info-row"><span class="key">Compute Time</span><span class="val accent" id="info-exptime">—</span></div>
+          <div class="info-row"><span class="key">Verts Reached</span><span class="val" id="info-reached">—</span></div>
+          <div class="info-row"><span class="key">Max Distance</span><span class="val" id="info-maxdist">—</span></div>
+          <div class="info-row" style="font-size: 10px; color: var(--muted-2); margin-top: 8px;">
+            Color = geodesic distance from click point. Blue = near, red = far. Smooth gradient = math is correct.
+          </div>
         </div>
         <div class="info-section">
           <h3>Hits (<span id="info-hit-count">0</span>)</h3>
@@ -266,7 +278,7 @@ camera.position.set(3, 2, 5);
 const controls = new OrbitControls(camera, canvas);
 controls.enableDamping = true;
 controls.dampingFactor = 0.1;
-controls.zoomSpeed = 0.15;     // default is 1.0 — way too fast for our scale
+controls.zoomSpeed = 0.4;     // default is 1.0 — way too fast for our scale
 controls.minDistance = 0.5;    // can't zoom into the model
 controls.maxDistance = 50;     // can't zoom out into the void
 
@@ -486,6 +498,11 @@ function installModel(rootObject, fileName) {
     toast('WARNING: Model has no UVs. Painting will not work.');
   }
 
+  // Build the welded mesh graph for exp-map computations
+  originalMaterials = [];
+  buildMeshGraph();
+  buildVertexBases();
+
   // Draw UV layout
   drawUVLayout();
 }
@@ -588,6 +605,19 @@ function recordHit(hit) {
     barycentric ? `${barycentric.x.toFixed(3)}, ${barycentric.y.toFixed(3)}, ${barycentric.z.toFixed(3)}` : '—';
   document.getElementById('info-hit-count').textContent = state.hits.length;
 
+  // Run the discrete exp map from this point
+  if (meshGraph) {
+    const seedIdx = nearestWeldedVertex(hit.point);
+    if (seedIdx >= 0) {
+      // Limit radius to a reasonable fraction of the model so we get a localized view
+      const bbox = new THREE.Box3();
+      for (const p of meshGraph.positions) bbox.expandByPoint(p);
+      const modelSize = bbox.getSize(new THREE.Vector3()).length();
+      computeExpMap(seedIdx, modelSize * 0.5);
+      if (vizActive) applyDistanceColors();
+    }
+  }
+
   // Redraw UV view
   drawUVLayout();
 }
@@ -602,6 +632,13 @@ document.getElementById('clearHits').addEventListener('click', () => {
   document.getElementById('info-world').textContent = '—';
   document.getElementById('info-uv').textContent = '—';
   document.getElementById('info-bary').textContent = '—';
+  document.getElementById('info-exptime').textContent = '—';
+  document.getElementById('info-reached').textContent = '—';
+  document.getElementById('info-maxdist').textContent = '—';
+  // Reset exp map state and restore materials
+  expMap.distance = null;
+  expMap.uv2D = null;
+  clearDistanceColors();
   drawUVLayout();
 });
 
@@ -690,6 +727,504 @@ function drawUVLayout() {
 
 // Initial UV draw (empty state)
 drawUVLayout();
+
+// =========================================================================
+// MESH GRAPH — weld vertices, build adjacency for Dijkstra
+// =========================================================================
+// The render mesh has UV seams that split a single position into multiple
+// vertices. For exp-map walking we need a graph of unique positions.
+
+let meshGraph = null; // { positions, normals, adjacency, renderToWelded, weldedToRender }
+
+function buildMeshGraph() {
+  if (state.loadedMeshes.length === 0) { meshGraph = null; return; }
+
+  // Combine all meshes into one global graph (positions in WORLD space)
+  // Each render vertex has a world position. We weld by snapping to a grid.
+  const allWorldPositions = [];   // Vector3 per render vertex (world space)
+  const allWorldNormals = [];     // Vector3 per render vertex (world space)
+  const meshOffsets = [];         // Where each mesh's render vertices start in the global array
+
+  for (const mesh of state.loadedMeshes) {
+    mesh.updateMatrixWorld();
+    const geo = mesh.geometry;
+    const posAttr = geo.attributes.position;
+    const normAttr = geo.attributes.normal;
+    const offset = allWorldPositions.length;
+    meshOffsets.push(offset);
+
+    const normalMatrix = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const wp = new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(mesh.matrixWorld);
+      allWorldPositions.push(wp);
+      const wn = new THREE.Vector3().fromBufferAttribute(normAttr, i).applyMatrix3(normalMatrix).normalize();
+      allWorldNormals.push(wn);
+    }
+  }
+  meshOffsets.push(allWorldPositions.length); // sentinel
+
+  // Determine welding tolerance based on model scale
+  const bbox = new THREE.Box3();
+  for (const p of allWorldPositions) bbox.expandByPoint(p);
+  const modelSize = bbox.getSize(new THREE.Vector3()).length();
+  const weldTol = modelSize * 1e-5;  // 0.001% of bounding diagonal
+  const invTol = 1 / weldTol;
+
+  // Weld via spatial hash
+  const posMap = new Map();  // hash -> welded index
+  const renderToWelded = new Int32Array(allWorldPositions.length);
+  const weldedPositions = [];    // Vector3 per welded vertex
+  const weldedNormalAcc = [];    // Vector3, accumulating then normalize
+
+  for (let i = 0; i < allWorldPositions.length; i++) {
+    const p = allWorldPositions[i];
+    const key = Math.round(p.x * invTol) + ',' + Math.round(p.y * invTol) + ',' + Math.round(p.z * invTol);
+    let wIdx = posMap.get(key);
+    if (wIdx === undefined) {
+      wIdx = weldedPositions.length;
+      posMap.set(key, wIdx);
+      weldedPositions.push(p.clone());
+      weldedNormalAcc.push(allWorldNormals[i].clone());
+    } else {
+      weldedNormalAcc[wIdx].add(allWorldNormals[i]);
+    }
+    renderToWelded[i] = wIdx;
+  }
+  // Normalize accumulated normals (average over the welded duplicates)
+  const weldedNormals = weldedNormalAcc.map(n => n.normalize());
+
+  // Build adjacency from triangles (using welded indices, dedup edges)
+  const adjacencySet = new Map(); // welded idx -> Set of welded neighbor idxs
+  function addEdge(a, b) {
+    if (a === b) return;
+    if (!adjacencySet.has(a)) adjacencySet.set(a, new Set());
+    if (!adjacencySet.has(b)) adjacencySet.set(b, new Set());
+    adjacencySet.get(a).add(b);
+    adjacencySet.get(b).add(a);
+  }
+
+  for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
+    const mesh = state.loadedMeshes[mi];
+    const geo = mesh.geometry;
+    const index = geo.index;
+    const triCount = index ? index.count / 3 : geo.attributes.position.count / 3;
+    const baseOffset = meshOffsets[mi];
+
+    for (let t = 0; t < triCount; t++) {
+      const ai = index ? index.getX(t * 3)     : t * 3;
+      const bi = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+      const ci = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+      const wa = renderToWelded[baseOffset + ai];
+      const wb = renderToWelded[baseOffset + bi];
+      const wc = renderToWelded[baseOffset + ci];
+      addEdge(wa, wb);
+      addEdge(wb, wc);
+      addEdge(wc, wa);
+    }
+  }
+
+  // Convert sets to flat arrays for speed
+  const adjacency = [];
+  let edgeCount = 0;
+  for (let i = 0; i < weldedPositions.length; i++) {
+    const set = adjacencySet.get(i);
+    if (set) {
+      adjacency.push([...set]);
+      edgeCount += set.size;
+    } else {
+      adjacency.push([]);
+    }
+  }
+  edgeCount /= 2; // each edge counted twice
+
+  // Map welded -> array of render verts (for later: painting back into UV space)
+  const weldedToRender = [];
+  for (let i = 0; i < weldedPositions.length; i++) weldedToRender.push([]);
+  for (let i = 0; i < renderToWelded.length; i++) {
+    weldedToRender[renderToWelded[i]].push(i);
+  }
+
+  meshGraph = {
+    positions: weldedPositions,         // Vector3[] world space, deduped
+    normals: weldedNormals,             // Vector3[] world space, averaged
+    adjacency,                          // int[][] per welded idx -> neighbor welded indices
+    renderToWelded,                     // Int32Array indexed by *global* render index (baseOffset + i)
+    weldedToRender,                     // int[][] welded idx -> render indices that map to it
+    meshOffsets,                        // int[] base offset of each mesh in render-vertex space
+    edgeCount,
+    weldTol,
+  };
+
+  document.getElementById('info-welded').textContent = weldedPositions.length.toLocaleString();
+  document.getElementById('info-edges').textContent = edgeCount.toLocaleString();
+}
+
+// Find welded vertex nearest to a world position (used after raycast)
+function nearestWeldedVertex(worldPos) {
+  if (!meshGraph) return -1;
+  let best = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < meshGraph.positions.length; i++) {
+    const d = meshGraph.positions[i].distanceToSquared(worldPos);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+// =========================================================================
+// DISCRETE EXPONENTIAL MAP — Schmidt et al. 2006
+// =========================================================================
+// For a seed vertex p, compute 2D coordinates (u, v) for all nearby welded
+// vertices such that distances and angles approximate the geodesic surface.
+//
+// Algorithm (paper section 4.2):
+//   1. Establish tangent plane Tp at p with basis (xp, yp, np).
+//   2. Run Dijkstra outward. For each visited vertex r, also track:
+//        - up_r: r's 2D position in Tp (computed when r was relaxed)
+//        - theta_pr: rotation needed to align r's local basis with p's basis
+//   3. When relaxing edge r -> q:
+//        - Compute ur_q: q's local 2D position in r's tangent plane
+//          (just project the 3D vector r->q onto r's tangent plane, expressed in r's basis)
+//        - up_q_candidate = up_r + Rot2D(theta_pr) * ur_q
+//        - If |up_q_candidate| < current distance for q, accept and propagate
+//   4. theta_pr is computed once for r when r is first visited: it's the angle
+//      between r's basis vectors (transferred into Tp via tangent-plane alignment)
+//      and p's basis vectors.
+//
+// Tangent plane construction at vertex v with normal n:
+//   - Pick any vector not parallel to n (e.g. world up, or x-axis if n is close to up)
+//   - x_v = normalize(perpendicular projection of that vector)
+//   - y_v = normalize(n cross x_v)
+//
+// "Transferring r's basis into p's tangent plane":
+//   Rotate r's basis around the axis perpendicular to both np and nr,
+//   by angle acos(np . nr). This makes r's plane coplanar with p's plane.
+//   Then the in-plane rotation theta_pr is the angle between
+//   the rotated x_r vector and x_p, signed by np.
+
+const expMap = {
+  seed: -1,
+  uv2D: null,         // Float32Array length 2*N: (u, v) per welded vertex
+  distance: null,     // Float32Array length N: geodesic distance to seed
+  visited: null,      // Uint8Array length N
+  basisX: null,       // Float32Array length 3*N: precomputed tangent X per vertex
+  basisY: null,       // Float32Array length 3*N: precomputed tangent Y per vertex
+  thetaToSeed: null,  // Float32Array length N: rotation to align with seed's basis
+  maxDist: 0,
+  visitedCount: 0,
+};
+
+// Build per-vertex tangent basis (xv, yv, nv) for every welded vertex
+function buildVertexBases() {
+  if (!meshGraph) return;
+  const N = meshGraph.positions.length;
+  expMap.basisX = new Float32Array(N * 3);
+  expMap.basisY = new Float32Array(N * 3);
+  const tmp = new THREE.Vector3();
+  const xv = new THREE.Vector3();
+  const yv = new THREE.Vector3();
+  const ref = new THREE.Vector3();
+
+  for (let i = 0; i < N; i++) {
+    const n = meshGraph.normals[i];
+    // Pick a reference vector not parallel to n
+    if (Math.abs(n.y) < 0.9) ref.set(0, 1, 0);
+    else ref.set(1, 0, 0);
+    // xv = normalize(ref - (ref.n) * n)
+    tmp.copy(n).multiplyScalar(ref.dot(n));
+    xv.subVectors(ref, tmp).normalize();
+    // yv = n cross xv (gives right-handed basis with n)
+    yv.crossVectors(n, xv).normalize();
+    expMap.basisX[i * 3]     = xv.x;
+    expMap.basisX[i * 3 + 1] = xv.y;
+    expMap.basisX[i * 3 + 2] = xv.z;
+    expMap.basisY[i * 3]     = yv.x;
+    expMap.basisY[i * 3 + 1] = yv.y;
+    expMap.basisY[i * 3 + 2] = yv.z;
+  }
+}
+
+// Compute the rotation angle that aligns r's basis with p's basis,
+// after transferring r's plane to be coplanar with p's plane.
+// Returns angle in radians.
+function computeThetaToSeed(seedIdx, rIdx) {
+  // Get bases
+  const np = meshGraph.normals[seedIdx];
+  const nr = meshGraph.normals[rIdx];
+  const xp = new THREE.Vector3(
+    expMap.basisX[seedIdx * 3], expMap.basisX[seedIdx * 3 + 1], expMap.basisX[seedIdx * 3 + 2]
+  );
+  const xr = new THREE.Vector3(
+    expMap.basisX[rIdx * 3], expMap.basisX[rIdx * 3 + 1], expMap.basisX[rIdx * 3 + 2]
+  );
+
+  // Step 1: rotate r's plane to be coplanar with p's plane.
+  // The rotation is around axis = (nr x np), by angle = acos(nr . np).
+  const dot = THREE.MathUtils.clamp(nr.dot(np), -1, 1);
+  const axis = new THREE.Vector3().crossVectors(nr, np);
+  const axisLen = axis.length();
+
+  let xrPrime;
+  if (axisLen < 1e-8) {
+    // nr and np are parallel; either same direction (no rotation) or opposite
+    if (dot > 0) {
+      xrPrime = xr.clone();
+    } else {
+      // Opposite normals: flip xr (degenerate case, rare)
+      xrPrime = xr.clone().negate();
+    }
+  } else {
+    axis.divideScalar(axisLen);
+    const angle = Math.acos(dot);
+    xrPrime = xr.clone().applyAxisAngle(axis, angle);
+  }
+
+  // Step 2: in p's plane, the rotation angle theta is the signed angle
+  // from xp to xrPrime, measured around np.
+  // We use atan2(xp.cross(xrPrime).dot(np), xp.dot(xrPrime))
+  const cross = new THREE.Vector3().crossVectors(xp, xrPrime);
+  const sinT = cross.dot(np);
+  const cosT = xp.dot(xrPrime);
+  return Math.atan2(sinT, cosT);
+}
+
+// Project edge r->q into r's tangent plane, return local 2D coords in r's basis
+function localEdgeInTangentPlane(rIdx, qIdx) {
+  const pr = meshGraph.positions[rIdx];
+  const pq = meshGraph.positions[qIdx];
+  const nr = meshGraph.normals[rIdx];
+  const edge = new THREE.Vector3().subVectors(pq, pr);
+  const edgeLen = edge.length();
+  if (edgeLen < 1e-10) return { u: 0, v: 0, len: 0 };
+
+  // Per paper section 4.3: "We assume that the length |p - q| is a good estimate
+  // of geodesic distance and determine the normal coordinates by finding the angle
+  // between pq and Tp, then rotating pq by that angle around pq x np".
+  // In practice this means: project edge onto tangent plane, rescale to original length.
+  // (More precise: tilt the edge into the plane preserving length.)
+
+  // Simpler & equivalent: project edge into tangent plane, then rescale to |edge|.
+  const proj = edge.clone();
+  const along = nr.dot(edge);
+  proj.addScaledVector(nr, -along);  // remove component along normal
+  const projLen = proj.length();
+  if (projLen < 1e-10) {
+    // Edge is along normal; this point is "above" r — rare but possible at sharp corners.
+    // Treat as zero local displacement (we'll be reached via another path).
+    return { u: 0, v: 0, len: edgeLen };
+  }
+  proj.multiplyScalar(edgeLen / projLen);  // rescale to true 3D length
+
+  // Express in r's tangent basis
+  const xr = new THREE.Vector3(
+    expMap.basisX[rIdx * 3], expMap.basisX[rIdx * 3 + 1], expMap.basisX[rIdx * 3 + 2]
+  );
+  const yr = new THREE.Vector3(
+    expMap.basisY[rIdx * 3], expMap.basisY[rIdx * 3 + 1], expMap.basisY[rIdx * 3 + 2]
+  );
+  return { u: proj.dot(xr), v: proj.dot(yr), len: edgeLen };
+}
+
+// Simple binary heap min-priority queue
+class MinHeap {
+  constructor() { this.h = []; }
+  size() { return this.h.length; }
+  push(item) {
+    this.h.push(item);
+    let i = this.h.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.h[parent].d <= this.h[i].d) break;
+      [this.h[parent], this.h[i]] = [this.h[i], this.h[parent]];
+      i = parent;
+    }
+  }
+  pop() {
+    const top = this.h[0];
+    const last = this.h.pop();
+    if (this.h.length > 0) {
+      this.h[0] = last;
+      let i = 0;
+      const n = this.h.length;
+      while (true) {
+        const l = 2 * i + 1, r = 2 * i + 2;
+        let smallest = i;
+        if (l < n && this.h[l].d < this.h[smallest].d) smallest = l;
+        if (r < n && this.h[r].d < this.h[smallest].d) smallest = r;
+        if (smallest === i) break;
+        [this.h[smallest], this.h[i]] = [this.h[i], this.h[smallest]];
+        i = smallest;
+      }
+    }
+    return top;
+  }
+}
+
+// Main computation
+function computeExpMap(seedIdx, maxRadius = Infinity) {
+  if (!meshGraph) return;
+  if (!expMap.basisX) buildVertexBases();
+
+  const t0 = performance.now();
+  const N = meshGraph.positions.length;
+  expMap.seed = seedIdx;
+  expMap.uv2D = new Float32Array(N * 2);
+  expMap.distance = new Float32Array(N);
+  expMap.visited = new Uint8Array(N);
+  expMap.thetaToSeed = new Float32Array(N);
+  for (let i = 0; i < N; i++) expMap.distance[i] = Infinity;
+  expMap.distance[seedIdx] = 0;
+  expMap.uv2D[seedIdx * 2] = 0;
+  expMap.uv2D[seedIdx * 2 + 1] = 0;
+  expMap.thetaToSeed[seedIdx] = 0;
+  expMap.maxDist = 0;
+  expMap.visitedCount = 0;
+
+  const heap = new MinHeap();
+  heap.push({ idx: seedIdx, d: 0 });
+
+  while (heap.size() > 0) {
+    const { idx: r, d: dr } = heap.pop();
+    if (expMap.visited[r]) continue;
+    if (dr > maxRadius) break;
+    expMap.visited[r] = 1;
+    expMap.visitedCount++;
+    if (dr > expMap.maxDist) expMap.maxDist = dr;
+
+    // Compute theta_pr if not seed (and not already computed; we only compute it
+    // for the first time we visit r, which is also when we finalize r's position).
+    if (r !== seedIdx) {
+      expMap.thetaToSeed[r] = computeThetaToSeed(seedIdx, r);
+    }
+
+    const upr_x = expMap.uv2D[r * 2];
+    const upr_y = expMap.uv2D[r * 2 + 1];
+    const theta = expMap.thetaToSeed[r];
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+
+    const neighbors = meshGraph.adjacency[r];
+    for (const q of neighbors) {
+      if (expMap.visited[q]) continue;
+      // Local edge in r's tangent plane
+      const { u: urq_u, v: urq_v, len: edgeLen } = localEdgeInTangentPlane(r, q);
+      // Rotate to align with p's basis
+      const rot_u = cosT * urq_u - sinT * urq_v;
+      const rot_v = sinT * urq_u + cosT * urq_v;
+      // Candidate p-space position for q
+      const cand_x = upr_x + rot_u;
+      const cand_y = upr_y + rot_v;
+      const cand_d = Math.sqrt(cand_x * cand_x + cand_y * cand_y);
+
+      if (cand_d < expMap.distance[q]) {
+        expMap.distance[q] = cand_d;
+        expMap.uv2D[q * 2]     = cand_x;
+        expMap.uv2D[q * 2 + 1] = cand_y;
+        heap.push({ idx: q, d: cand_d });
+      }
+    }
+  }
+
+  const t1 = performance.now();
+  document.getElementById('info-exptime').textContent = (t1 - t0).toFixed(1) + ' ms';
+  document.getElementById('info-reached').textContent = expMap.visitedCount + ' / ' + N;
+  document.getElementById('info-maxdist').textContent = expMap.maxDist.toFixed(3);
+}
+
+// =========================================================================
+// DISTANCE VISUALIZATION — color the mesh by geodesic distance
+// =========================================================================
+// We color each render vertex by its welded vertex's distance to the seed,
+// using a viridis-ish colormap. Blue = near, red = far, gray = unreached.
+
+let vizActive = true;
+let originalMaterials = [];  // cache materials so we can toggle off
+
+function colorRamp(t) {
+  // Smooth viridis-ish ramp, t in [0, 1]
+  // dark blue -> teal -> yellow -> red
+  t = Math.max(0, Math.min(1, t));
+  // Piecewise gradient
+  const stops = [
+    [0.00, 0.05, 0.10, 0.45],  // dark blue
+    [0.25, 0.10, 0.45, 0.60],  // teal-blue
+    [0.50, 0.20, 0.70, 0.40],  // teal-green
+    [0.70, 0.80, 0.80, 0.20],  // yellow
+    [1.00, 0.90, 0.30, 0.20],  // red
+  ];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (t >= stops[i][0] && t <= stops[i + 1][0]) {
+      const span = stops[i + 1][0] - stops[i][0];
+      const f = (t - stops[i][0]) / span;
+      return [
+        stops[i][1] + (stops[i + 1][1] - stops[i][1]) * f,
+        stops[i][2] + (stops[i + 1][2] - stops[i][2]) * f,
+        stops[i][3] + (stops[i + 1][3] - stops[i][3]) * f,
+      ];
+    }
+  }
+  return [stops[stops.length - 1][1], stops[stops.length - 1][2], stops[stops.length - 1][3]];
+}
+
+function applyDistanceColors() {
+  if (!meshGraph || !expMap.distance) return;
+  const maxD = expMap.maxDist;
+  if (maxD <= 0) return;
+
+  for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
+    const mesh = state.loadedMeshes[mi];
+    const geo = mesh.geometry;
+    const posAttr = geo.attributes.position;
+    const baseOffset = meshGraph.meshOffsets[mi];
+
+    // Build or reuse color attribute
+    let colorAttr = geo.attributes.color;
+    if (!colorAttr || colorAttr.count !== posAttr.count) {
+      const arr = new Float32Array(posAttr.count * 3);
+      colorAttr = new THREE.BufferAttribute(arr, 3);
+      geo.setAttribute('color', colorAttr);
+    }
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const wIdx = meshGraph.renderToWelded[baseOffset + i];
+      const d = expMap.distance[wIdx];
+      let rgb;
+      if (!isFinite(d)) {
+        rgb = [0.18, 0.18, 0.18];  // unreached = dark gray
+      } else {
+        rgb = colorRamp(d / maxD);
+      }
+      colorAttr.setXYZ(i, rgb[0], rgb[1], rgb[2]);
+    }
+    colorAttr.needsUpdate = true;
+
+    // Make material use vertex colors
+    if (!originalMaterials[mi]) originalMaterials[mi] = mesh.material;
+    mesh.material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.7,
+      metalness: 0.0,
+      flatShading: false,
+    });
+  }
+}
+
+function clearDistanceColors() {
+  for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
+    const mesh = state.loadedMeshes[mi];
+    if (originalMaterials[mi]) {
+      mesh.material = originalMaterials[mi];
+    }
+  }
+}
+
+document.getElementById('toggleVizBtn').addEventListener('click', () => {
+  vizActive = !vizActive;
+  document.getElementById('toggleVizBtn').textContent = vizActive ? 'Hide Distance Viz' : 'Show Distance Viz';
+  if (vizActive && expMap.distance) applyDistanceColors();
+  else clearDistanceColors();
+});
 
 // =========================================================================
 // TOAST
