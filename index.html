@@ -1145,9 +1145,12 @@ function computeExpMap(seedIdx, maxRadius = Infinity) {
   }
 
   const t1 = performance.now();
-  document.getElementById('info-exptime').textContent = (t1 - t0).toFixed(1) + ' ms';
-  document.getElementById('info-reached').textContent = expMap.visitedCount + ' / ' + N;
-  document.getElementById('info-maxdist').textContent = expMap.maxDist.toFixed(3);
+  const elTime = document.getElementById('info-exptime');
+  const elReached = document.getElementById('info-reached');
+  const elMaxDist = document.getElementById('info-maxdist');
+  if (elTime) elTime.textContent = (t1 - t0).toFixed(1) + ' ms';
+  if (elReached) elReached.textContent = expMap.visitedCount + ' / ' + N;
+  if (elMaxDist) elMaxDist.textContent = expMap.maxDist.toFixed(3);
 }
 
 // =========================================================================
