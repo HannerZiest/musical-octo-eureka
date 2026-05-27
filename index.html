@@ -1237,35 +1237,48 @@ function closePolygon() {
   const bbox = new THREE.Box3();
   for (const p of meshGraph.positions) bbox.expandByPoint(p);
   const modelSize = bbox.getSize(new THREE.Vector3()).length();
-  const radius = maxClickDist * 2.5 + modelSize * 0.001;
+  // Tighter radius: 1.5x lower-bound (Euclidean) covers ~all triangles whose
+  // vertices we care about, without including far-away vertices that would
+  // contribute exp-map distortion / wraparound false positives.
+  const radius = maxClickDist * 1.5 + modelSize * 0.001;
 
   // 4. Run exp map with the local radius
   computeExpMap(seedIdx, radius);
 
-  // 4. Compute 2D position for each polygon vertex via barycentric interp
+  // 5. Compute 2D position for each polygon vertex via barycentric interp of
+  //    its hit triangle's three exp-map coords.
   const polygonVerts2D = [];
+  let polygonMaxRadius2D = 0;
   for (const hit of state.hits) {
     const baseOffset = meshGraph.meshOffsets[hit.meshIndex];
     const wa = meshGraph.renderToWelded[baseOffset + hit.triangleVertA];
     const wb = meshGraph.renderToWelded[baseOffset + hit.triangleVertB];
     const wc = meshGraph.renderToWelded[baseOffset + hit.triangleVertC];
     const bary = hit.barycentric;
-    // If any of the welded verts wasn't reached by exp map, fall back to nearest reached vert
     const dA = expMap.distance[wa], dB = expMap.distance[wb], dC = expMap.distance[wc];
     if (!isFinite(dA) || !isFinite(dB) || !isFinite(dC)) {
-      // shouldn't happen since exp map ran with infinite radius, but just in case
-      console.warn('Polygon point on unreached vertex');
+      console.warn('Polygon point on unreached vertex (radius too tight?)');
       polygonVerts2D.push([0, 0]);
       continue;
     }
     const u = bary.x * expMap.uv2D[wa*2]   + bary.y * expMap.uv2D[wb*2]   + bary.z * expMap.uv2D[wc*2];
     const v = bary.x * expMap.uv2D[wa*2+1] + bary.y * expMap.uv2D[wb*2+1] + bary.z * expMap.uv2D[wc*2+1];
     polygonVerts2D.push([u, v]);
+    const r = Math.hypot(u, v);
+    if (r > polygonMaxRadius2D) polygonMaxRadius2D = r;
   }
   polygonState.polygonVerts2D = polygonVerts2D;
 
-  // 5. For every mesh triangle, test if its centroid is inside the polygon (in 2D)
-  // Build triangle membership array. Use a global triangle index across meshes.
+  // The inclusion radius is the polygon's own geodesic extent (max distance
+  // from seed to any polygon vertex in 2D space) plus a small buffer. Any
+  // triangle vertex with geodesic distance > this is automatically excluded.
+  const inclusionRadius = polygonMaxRadius2D * 1.3;
+
+  // 6. For every mesh triangle, test if it overlaps the polygon.
+  // Multi-point test: include if centroid OR any of the 3 vertices is inside
+  // the polygon (in 2D exp-map space). This catches triangles the polygon
+  // passes through but doesn't fully enclose (which happens often with
+  // low-poly meshes).
   let totalTris = 0;
   for (const mesh of state.loadedMeshes) {
     const geo = mesh.geometry;
@@ -1291,17 +1304,32 @@ function closePolygon() {
       const wb = meshGraph.renderToWelded[baseOffset + bi];
       const wc = meshGraph.renderToWelded[baseOffset + ci];
 
-      // If any vertex wasn't reached, skip (treat as outside)
-      if (!isFinite(expMap.distance[wa]) || !isFinite(expMap.distance[wb]) || !isFinite(expMap.distance[wc])) {
+      const dA = expMap.distance[wa];
+      const dB = expMap.distance[wb];
+      const dC = expMap.distance[wc];
+
+      // Skip if any vertex unreached or beyond inclusion radius
+      if (!isFinite(dA) || !isFinite(dB) || !isFinite(dC) ||
+          dA > inclusionRadius || dB > inclusionRadius || dC > inclusionRadius) {
         membership[triGlobal] = 0;
         triGlobal++;
         continue;
       }
 
-      // Triangle centroid in 2D
-      const cu = (expMap.uv2D[wa*2] + expMap.uv2D[wb*2] + expMap.uv2D[wc*2]) / 3;
-      const cv = (expMap.uv2D[wa*2+1] + expMap.uv2D[wb*2+1] + expMap.uv2D[wc*2+1]) / 3;
-      if (pointInPolygon2D(cu, cv, polygonVerts2D)) {
+      const ua = expMap.uv2D[wa*2], va = expMap.uv2D[wa*2+1];
+      const ub = expMap.uv2D[wb*2], vb = expMap.uv2D[wb*2+1];
+      const uc = expMap.uv2D[wc*2], vc = expMap.uv2D[wc*2+1];
+      const cu = (ua + ub + uc) / 3;
+      const cv = (va + vb + vc) / 3;
+
+      // Include if centroid OR any vertex is inside polygon
+      const hit =
+        pointInPolygon2D(cu, cv, polygonVerts2D) ||
+        pointInPolygon2D(ua, va, polygonVerts2D) ||
+        pointInPolygon2D(ub, vb, polygonVerts2D) ||
+        pointInPolygon2D(uc, vc, polygonVerts2D);
+
+      if (hit) {
         membership[triGlobal] = 1;
         insideCount++;
       }
