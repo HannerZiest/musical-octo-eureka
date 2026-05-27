@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>UV Painter — Phase 1: 3D Foundation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  :root {
+    --bg: #0c0c0c;
+    --panel: #161616;
+    --panel-2: #1d1d1d;
+    --border: #2a2a2a;
+    --border-light: #3a3a3a;
+    --text: #e8e8e8;
+    --muted: #777;
+    --muted-2: #555;
+    --accent: #ff6b1a;
+    --accent-glow: rgba(255, 107, 26, 0.15);
+    --danger: #ff3344;
+    --success: #4ade80;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    overflow: hidden;
+  }
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    height: 48px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px;
+    gap: 16px; flex-shrink: 0;
+  }
+  .logo {
+    font-weight: 700; letter-spacing: 0.04em;
+    color: var(--accent);
+    text-transform: uppercase; font-size: 13px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .logo::before {
+    content: ''; width: 10px; height: 10px;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+  }
+  .phase-badge {
+    font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.12em;
+    padding: 4px 8px; border: 1px solid var(--border-light);
+  }
+  .header-actions { margin-left: auto; display: flex; gap: 8px; }
+  button {
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 8px 14px; border: 1px solid var(--border-light);
+    background: var(--panel-2); color: var(--text);
+    cursor: pointer; transition: all 0.15s;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  main {
+    flex: 1; display: grid;
+    grid-template-columns: 1fr 400px;
+    overflow: hidden;
+  }
+  .viewport-3d {
+    position: relative; background: #050505;
+    overflow: hidden;
+  }
+  #three-canvas { display: block; width: 100%; height: 100%; }
+  .viewport-uv {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .uv-canvas-wrap {
+    aspect-ratio: 1; padding: 16px;
+    display: flex; align-items: center; justify-content: center;
+    border-bottom: 1px solid var(--border);
+  }
+  #uv-canvas {
+    width: 100%; height: 100%;
+    background: #050505;
+    border: 1px solid var(--border);
+    image-rendering: crisp-edges;
+  }
+  .info-panel {
+    flex: 1; padding: 16px;
+    overflow-y: auto;
+  }
+  .info-section { margin-bottom: 16px; }
+  .info-section h3 {
+    font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--muted); margin-bottom: 8px;
+  }
+  .info-row {
+    display: flex; justify-content: space-between;
+    padding: 4px 0; font-size: 11px;
+    border-bottom: 1px solid var(--border);
+  }
+  .info-row .key { color: var(--muted); }
+  .info-row .val { color: var(--text); }
+  .info-row .val.accent { color: var(--accent); }
+  .info-row .val.success { color: var(--success); }
+  .info-row .val.danger { color: var(--danger); }
+
+  /* DROPZONE OVERLAY */
+  .dropzone-overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: rgba(12, 12, 12, 0.9);
+    z-index: 10;
+    gap: 16px;
+    transition: opacity 0.2s;
+  }
+  .dropzone-overlay.hidden {
+    opacity: 0; pointer-events: none;
+  }
+  .dropzone-overlay.dragover {
+    background: rgba(255, 107, 26, 0.1);
+  }
+  .dropzone-icon {
+    font-size: 48px; color: var(--muted);
+    line-height: 1;
+  }
+  .dropzone-title { font-size: 16px; font-weight: 600; }
+  .dropzone-hint { font-size: 11px; color: var(--muted); text-align: center; max-width: 400px; line-height: 1.6; }
+
+  input[type=file] { display: none; }
+
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--accent);
+    padding: 10px 16px; color: var(--accent);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    z-index: 1000; opacity: 0; transition: opacity 0.2s;
+    pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+
+  .footer {
+    height: 32px; background: var(--panel);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px;
+    font-size: 10px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    flex-shrink: 0;
+  }
+  .footer .spacer { flex: 1; }
+  .footer span.accent { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">UV·PAINTER</div>
+    <div class="phase-badge">Phase 1 — 3D Foundation</div>
+    <div class="header-actions">
+      <button id="loadBtn">Load Model</button>
+      <button id="clearHits">Clear Hits</button>
+      <input type="file" id="fileInput" accept=".obj,.glb,.gltf">
+    </div>
+  </header>
+
+  <main>
+    <div class="viewport-3d">
+      <canvas id="three-canvas"></canvas>
+      <div class="dropzone-overlay" id="dropzone">
+        <div class="dropzone-icon">⌗</div>
+        <div class="dropzone-title">Drop a 3D model</div>
+        <div class="dropzone-hint">
+          OBJ, GLB, or GLTF · model must have UVs<br>
+          drag and drop here, or click "Load Model" above
+        </div>
+      </div>
+    </div>
+
+    <div class="viewport-uv">
+      <div class="uv-canvas-wrap">
+        <canvas id="uv-canvas" width="512" height="512"></canvas>
+      </div>
+      <div class="info-panel">
+        <div class="info-section">
+          <h3>Model</h3>
+          <div class="info-row"><span class="key">Status</span><span class="val" id="info-status">Waiting</span></div>
+          <div class="info-row"><span class="key">Vertices</span><span class="val accent" id="info-verts">—</span></div>
+          <div class="info-row"><span class="key">Triangles</span><span class="val accent" id="info-tris">—</span></div>
+          <div class="info-row"><span class="key">Has UVs</span><span class="val" id="info-uvs">—</span></div>
+          <div class="info-row"><span class="key">Has Normals</span><span class="val" id="info-normals">—</span></div>
+          <div class="info-row"><span class="key">Meshes</span><span class="val" id="info-meshes">—</span></div>
+        </div>
+        <div class="info-section">
+          <h3>Last Click</h3>
+          <div class="info-row"><span class="key">Triangle #</span><span class="val accent" id="info-tri-idx">—</span></div>
+          <div class="info-row"><span class="key">World Pos</span><span class="val" id="info-world">—</span></div>
+          <div class="info-row"><span class="key">UV</span><span class="val accent" id="info-uv">—</span></div>
+          <div class="info-row"><span class="key">Barycentric</span><span class="val" id="info-bary">—</span></div>
+        </div>
+        <div class="info-section">
+          <h3>Hits (<span id="info-hit-count">0</span>)</h3>
+          <div class="info-row" style="font-size: 10px; color: var(--muted-2);">
+            Click anywhere on the model to drop a marker. UV positions appear on the right.
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div class="footer">
+    <span>Drag to orbit · Scroll to zoom · Right-drag to pan · Left-click model to mark</span>
+    <div class="spacer"></div>
+    <span class="accent" id="footer-fps">— fps</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+// =========================================================================
+// STATE
+// =========================================================================
+const state = {
+  loadedMeshes: [],   // Array of THREE.Mesh that we can raycast against
+  hits: [],           // Array of { worldPos, uv, triangleIndex, meshIndex, barycentric, marker3d, marker2d }
+  hasUVs: false,
+  totalVerts: 0,
+  totalTris: 0,
+};
+
+// =========================================================================
+// THREE.JS SCENE
+// =========================================================================
+const canvas = document.getElementById('three-canvas');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0a0a);
+
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 1000);
+camera.position.set(3, 2, 5);
+
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.1;
+
+// Lighting — three-point setup, neutral and bright enough to see materials
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.0);
+keyLight.position.set(5, 8, 5);
+scene.add(keyLight);
+const fillLight = new THREE.DirectionalLight(0xffffff, 0.6);
+fillLight.position.set(-5, 3, 2);
+scene.add(fillLight);
+const rimLight = new THREE.DirectionalLight(0xffffff, 0.4);
+rimLight.position.set(0, 2, -5);
+scene.add(rimLight);
+scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+
+// Subtle ground grid for orientation
+const grid = new THREE.GridHelper(20, 20, 0x222222, 0x161616);
+grid.position.y = -0.001;
+scene.add(grid);
+
+// Group for loaded model + markers (so we can recenter cleanly)
+const modelGroup = new THREE.Group();
+scene.add(modelGroup);
+const markerGroup = new THREE.Group();
+scene.add(markerGroup);
+
+// Resize handling
+function resize() {
+  const wrap = canvas.parentElement;
+  const w = wrap.clientWidth;
+  const h = wrap.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Render loop
+let frameCount = 0;
+let lastFpsTime = performance.now();
+function animate() {
+  controls.update();
+  renderer.render(scene, camera);
+  frameCount++;
+  const now = performance.now();
+  if (now - lastFpsTime > 500) {
+    const fps = Math.round((frameCount * 1000) / (now - lastFpsTime));
+    document.getElementById('footer-fps').textContent = fps + ' fps';
+    frameCount = 0;
+    lastFpsTime = now;
+  }
+  requestAnimationFrame(animate);
+}
+animate();
+
+// =========================================================================
+// MODEL LOADING
+// =========================================================================
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+document.getElementById('loadBtn').addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('click', () => fileInput.click());
+
+;['dragenter', 'dragover'].forEach(evt => {
+  dropzone.addEventListener(evt, e => {
+    e.preventDefault();
+    dropzone.classList.add('dragover');
+  });
+});
+;['dragleave', 'drop'].forEach(evt => {
+  dropzone.addEventListener(evt, e => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+  });
+});
+dropzone.addEventListener('drop', async e => {
+  const file = e.dataTransfer.files[0];
+  if (file) await loadFile(file);
+});
+fileInput.addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (file) await loadFile(file);
+  fileInput.value = '';
+});
+
+async function loadFile(file) {
+  const name = file.name.toLowerCase();
+  toast(`Loading ${file.name}…`);
+  try {
+    let loadedObject;
+    if (name.endsWith('.obj')) {
+      const text = await file.text();
+      const loader = new OBJLoader();
+      loadedObject = loader.parse(text);
+    } else if (name.endsWith('.glb') || name.endsWith('.gltf')) {
+      const buffer = await file.arrayBuffer();
+      const loader = new GLTFLoader();
+      const gltf = await new Promise((res, rej) => {
+        loader.parse(buffer, '', res, rej);
+      });
+      loadedObject = gltf.scene;
+    } else {
+      toast('Unsupported file type. Use .obj, .glb, or .gltf');
+      return;
+    }
+    installModel(loadedObject, file.name);
+    dropzone.classList.add('hidden');
+    toast(`Loaded ${file.name}`);
+  } catch (err) {
+    console.error('Load error:', err);
+    toast('Failed to load: ' + (err.message || 'unknown error'));
+  }
+}
+
+// =========================================================================
+// INSTALL MODEL — set up the loaded object for raycasting
+// =========================================================================
+function installModel(rootObject, fileName) {
+  // Clear previous model and hits
+  modelGroup.clear();
+  markerGroup.clear();
+  state.loadedMeshes = [];
+  state.hits = [];
+  state.totalVerts = 0;
+  state.totalTris = 0;
+  state.hasUVs = true;
+  let hasNormals = true;
+  let meshCount = 0;
+
+  // Walk object tree, collect meshes
+  rootObject.traverse(child => {
+    if (child.isMesh && child.geometry) {
+      meshCount++;
+      const geo = child.geometry;
+
+      // Convert non-indexed to indexed for easier triangle lookup? Actually Three's raycaster
+      // gives us the .face for indexed geometry and the underlying triangle vertices either way,
+      // so we just need to make sure attributes are present.
+
+      // Check attributes
+      const posAttr = geo.attributes.position;
+      const uvAttr = geo.attributes.uv;
+      const normAttr = geo.attributes.normal;
+
+      if (!posAttr) {
+        console.warn('Mesh has no position attribute, skipping:', child.name);
+        return;
+      }
+      if (!uvAttr) state.hasUVs = false;
+      if (!normAttr) hasNormals = false;
+
+      // Compute normals if missing (so lighting works)
+      if (!normAttr) {
+        geo.computeVertexNormals();
+      }
+
+      state.totalVerts += posAttr.count;
+      const triCount = geo.index ? (geo.index.count / 3) : (posAttr.count / 3);
+      state.totalTris += triCount;
+
+      // Give the mesh a neutral material — the user might've loaded
+      // with weird default materials, especially from OBJ
+      child.material = new THREE.MeshStandardMaterial({
+        color: 0xb8b8b8,
+        roughness: 0.6,
+        metalness: 0.0,
+        flatShading: false,
+      });
+
+      // Tag mesh with index for later identification
+      child.userData.uvpMeshIndex = state.loadedMeshes.length;
+      state.loadedMeshes.push(child);
+    }
+  });
+
+  if (state.loadedMeshes.length === 0) {
+    toast('No meshes found in file');
+    return;
+  }
+
+  // Add to scene
+  modelGroup.add(rootObject);
+
+  // Center and scale to fit a 4-unit cube
+  const box = new THREE.Box3().setFromObject(rootObject);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const scale = 4.0 / Math.max(maxDim, 0.001);
+  rootObject.position.sub(center.multiplyScalar(scale));
+  rootObject.scale.setScalar(scale);
+
+  // Re-frame the camera
+  const newBox = new THREE.Box3().setFromObject(rootObject);
+  const newCenter = newBox.getCenter(new THREE.Vector3());
+  const newSize = newBox.getSize(new THREE.Vector3());
+  const newMax = Math.max(newSize.x, newSize.y, newSize.z);
+  const camDist = newMax * 2.0;
+  camera.position.set(camDist, camDist * 0.7, camDist);
+  camera.lookAt(newCenter);
+  controls.target.copy(newCenter);
+  controls.update();
+
+  // Update info panel
+  document.getElementById('info-status').innerHTML = `<span class="success">${fileName}</span>`;
+  document.getElementById('info-verts').textContent = state.totalVerts.toLocaleString();
+  document.getElementById('info-tris').textContent = Math.round(state.totalTris).toLocaleString();
+  const uvEl = document.getElementById('info-uvs');
+  uvEl.textContent = state.hasUVs ? 'Yes' : 'NO — required';
+  uvEl.className = 'val ' + (state.hasUVs ? 'success' : 'danger');
+  document.getElementById('info-normals').textContent = hasNormals ? 'Yes' : 'Computed';
+  document.getElementById('info-normals').className = 'val ' + (hasNormals ? 'success' : 'accent');
+  document.getElementById('info-meshes').textContent = meshCount;
+
+  if (!state.hasUVs) {
+    toast('WARNING: Model has no UVs. Painting will not work.');
+  }
+
+  // Draw UV layout
+  drawUVLayout();
+}
+
+// =========================================================================
+// RAYCASTING — click to mark hits
+// =========================================================================
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+// Detect click vs drag to avoid placing markers when orbiting
+let mouseDownPos = null;
+const CLICK_THRESHOLD = 5;
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  mouseDownPos = { x: e.clientX, y: e.clientY };
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (e.button !== 0 || !mouseDownPos) return;
+  const dx = e.clientX - mouseDownPos.x;
+  const dy = e.clientY - mouseDownPos.y;
+  const moved = Math.hypot(dx, dy);
+  mouseDownPos = null;
+  if (moved > CLICK_THRESHOLD) return; // it was a drag, not a click
+
+  if (state.loadedMeshes.length === 0) return;
+
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(state.loadedMeshes, false);
+  if (intersects.length === 0) return;
+
+  const hit = intersects[0];
+  recordHit(hit);
+});
+
+function recordHit(hit) {
+  // hit has: point (world space), face, faceIndex, object, uv (if geometry has uv)
+  const mesh = hit.object;
+  const geo = mesh.geometry;
+
+  // Compute the UV at the hit point manually so we have a reliable source of truth.
+  // Three's hit.uv works but only when the geometry has UVs set up correctly.
+  const uvAttr = geo.attributes.uv;
+  let uv = null;
+  let barycentric = null;
+  if (uvAttr && hit.face) {
+    const { a, b, c } = hit.face;
+    const uvA = new THREE.Vector2().fromBufferAttribute(uvAttr, a);
+    const uvB = new THREE.Vector2().fromBufferAttribute(uvAttr, b);
+    const uvC = new THREE.Vector2().fromBufferAttribute(uvAttr, c);
+
+    // Compute barycentric coords of hit.point relative to triangle in LOCAL space
+    const posAttr = geo.attributes.position;
+    const localP = mesh.worldToLocal(hit.point.clone());
+    const vA = new THREE.Vector3().fromBufferAttribute(posAttr, a);
+    const vB = new THREE.Vector3().fromBufferAttribute(posAttr, b);
+    const vC = new THREE.Vector3().fromBufferAttribute(posAttr, c);
+    const bary = new THREE.Vector3();
+    THREE.Triangle.getBarycoord(localP, vA, vB, vC, bary);
+    barycentric = bary;
+
+    uv = new THREE.Vector2(
+      uvA.x * bary.x + uvB.x * bary.y + uvC.x * bary.z,
+      uvA.y * bary.x + uvB.y * bary.y + uvC.y * bary.z
+    );
+  }
+
+  // Place 3D marker
+  const marker3d = new THREE.Mesh(
+    new THREE.SphereGeometry(0.04, 16, 16),
+    new THREE.MeshBasicMaterial({ color: 0xff6b1a })
+  );
+  marker3d.position.copy(hit.point);
+  markerGroup.add(marker3d);
+
+  // Record hit
+  const hitData = {
+    worldPos: hit.point.clone(),
+    uv: uv ? uv.clone() : null,
+    triangleIndex: hit.faceIndex,
+    meshIndex: mesh.userData.uvpMeshIndex,
+    barycentric: barycentric ? barycentric.clone() : null,
+    marker3d,
+  };
+  state.hits.push(hitData);
+
+  // Update info panel
+  document.getElementById('info-tri-idx').textContent = hit.faceIndex;
+  document.getElementById('info-world').textContent =
+    `${hit.point.x.toFixed(3)}, ${hit.point.y.toFixed(3)}, ${hit.point.z.toFixed(3)}`;
+  document.getElementById('info-uv').textContent =
+    uv ? `${uv.x.toFixed(4)}, ${uv.y.toFixed(4)}` : 'no UVs';
+  document.getElementById('info-bary').textContent =
+    barycentric ? `${barycentric.x.toFixed(3)}, ${barycentric.y.toFixed(3)}, ${barycentric.z.toFixed(3)}` : '—';
+  document.getElementById('info-hit-count').textContent = state.hits.length;
+
+  // Redraw UV view
+  drawUVLayout();
+}
+
+document.getElementById('clearHits').addEventListener('click', () => {
+  state.hits.forEach(h => {
+    if (h.marker3d) markerGroup.remove(h.marker3d);
+  });
+  state.hits = [];
+  document.getElementById('info-hit-count').textContent = '0';
+  document.getElementById('info-tri-idx').textContent = '—';
+  document.getElementById('info-world').textContent = '—';
+  document.getElementById('info-uv').textContent = '—';
+  document.getElementById('info-bary').textContent = '—';
+  drawUVLayout();
+});
+
+// =========================================================================
+// UV LAYOUT — 2D view showing the unwrap + click positions
+// =========================================================================
+const uvCanvas = document.getElementById('uv-canvas');
+const uvCtx = uvCanvas.getContext('2d');
+
+function drawUVLayout() {
+  const W = uvCanvas.width;
+  const H = uvCanvas.height;
+  uvCtx.fillStyle = '#050505';
+  uvCtx.fillRect(0, 0, W, H);
+
+  // Draw [0,1] box
+  uvCtx.strokeStyle = '#333';
+  uvCtx.lineWidth = 1;
+  uvCtx.strokeRect(0, 0, W, H);
+
+  if (state.loadedMeshes.length === 0) {
+    uvCtx.fillStyle = '#555';
+    uvCtx.font = '11px JetBrains Mono';
+    uvCtx.textAlign = 'center';
+    uvCtx.fillText('Load a model to see UV layout', W / 2, H / 2);
+    return;
+  }
+
+  if (!state.hasUVs) {
+    uvCtx.fillStyle = '#ff3344';
+    uvCtx.font = '11px JetBrains Mono';
+    uvCtx.textAlign = 'center';
+    uvCtx.fillText('Model has no UVs', W / 2, H / 2);
+    return;
+  }
+
+  // Draw each triangle of each mesh
+  uvCtx.strokeStyle = 'rgba(255, 107, 26, 0.35)';
+  uvCtx.lineWidth = 0.5;
+  for (const mesh of state.loadedMeshes) {
+    const geo = mesh.geometry;
+    const uvAttr = geo.attributes.uv;
+    if (!uvAttr) continue;
+    const index = geo.index;
+    const triCount = index ? index.count / 3 : uvAttr.count / 3;
+    for (let i = 0; i < triCount; i++) {
+      const a = index ? index.getX(i * 3) : i * 3;
+      const b = index ? index.getX(i * 3 + 1) : i * 3 + 1;
+      const c = index ? index.getX(i * 3 + 2) : i * 3 + 2;
+      const ax = uvAttr.getX(a) * W;
+      const ay = (1 - uvAttr.getY(a)) * H;
+      const bx = uvAttr.getX(b) * W;
+      const by = (1 - uvAttr.getY(b)) * H;
+      const cx = uvAttr.getX(c) * W;
+      const cy = (1 - uvAttr.getY(c)) * H;
+      uvCtx.beginPath();
+      uvCtx.moveTo(ax, ay);
+      uvCtx.lineTo(bx, by);
+      uvCtx.lineTo(cx, cy);
+      uvCtx.closePath();
+      uvCtx.stroke();
+    }
+  }
+
+  // Draw hit markers
+  for (let i = 0; i < state.hits.length; i++) {
+    const hit = state.hits[i];
+    if (!hit.uv) continue;
+    const x = hit.uv.x * W;
+    const y = (1 - hit.uv.y) * H;  // UV Y is bottom-up, canvas is top-down
+    uvCtx.beginPath();
+    uvCtx.arc(x, y, 6, 0, Math.PI * 2);
+    uvCtx.fillStyle = '#ff6b1a';
+    uvCtx.fill();
+    uvCtx.strokeStyle = '#0c0c0c';
+    uvCtx.lineWidth = 2;
+    uvCtx.stroke();
+    // Number label
+    uvCtx.fillStyle = '#fff';
+    uvCtx.font = 'bold 10px JetBrains Mono';
+    uvCtx.textAlign = 'center';
+    uvCtx.textBaseline = 'middle';
+    uvCtx.fillText(String(i + 1), x, y);
+  }
+}
+
+// Initial UV draw (empty state)
+drawUVLayout();
+
+// =========================================================================
+// TOAST
+// =========================================================================
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+</script>
+</body>
+</html>
