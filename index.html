@@ -171,11 +171,12 @@
 <div class="app">
   <header>
     <div class="logo">UV·PAINTER</div>
-    <div class="phase-badge">Phase 2 — Discrete Exp Map</div>
+    <div class="phase-badge">Phase 3 — Polygon on Surface</div>
     <div class="header-actions">
       <button id="loadBtn">Load Model</button>
-      <button id="clearHits">Clear Hits</button>
-      <button id="toggleVizBtn">Hide Distance Viz</button>
+      <button id="closePolyBtn">Close Polygon</button>
+      <button id="clearHits">Clear All</button>
+      <button id="toggleVizBtn">Hide Fill</button>
       <input type="file" id="fileInput" accept=".obj,.glb,.gltf">
     </div>
   </header>
@@ -215,14 +216,14 @@
           <div class="info-row"><span class="key">Barycentric</span><span class="val" id="info-bary">—</span></div>
         </div>
         <div class="info-section">
-          <h3>Exp Map (Schmidt 2006)</h3>
+          <h3>Polygon</h3>
+          <div class="info-row"><span class="key">Points</span><span class="val accent" id="info-poly-points">0</span></div>
+          <div class="info-row"><span class="key">Status</span><span class="val" id="info-poly-status">Drawing…</span></div>
+          <div class="info-row"><span class="key">Mask Triangles</span><span class="val accent" id="info-poly-tris">—</span></div>
+          <div class="info-row"><span class="key">Exp Map Time</span><span class="val" id="info-exptime">—</span></div>
           <div class="info-row"><span class="key">Welded Verts</span><span class="val" id="info-welded">—</span></div>
-          <div class="info-row"><span class="key">Graph Edges</span><span class="val" id="info-edges">—</span></div>
-          <div class="info-row"><span class="key">Compute Time</span><span class="val accent" id="info-exptime">—</span></div>
-          <div class="info-row"><span class="key">Verts Reached</span><span class="val" id="info-reached">—</span></div>
-          <div class="info-row"><span class="key">Max Distance</span><span class="val" id="info-maxdist">—</span></div>
           <div class="info-row" style="font-size: 10px; color: var(--muted-2); margin-top: 8px;">
-            Color = geodesic distance from click point. Blue = near, red = far. Smooth gradient = math is correct.
+            Click ≥3 points on the model, then click "Close Polygon" (or click near the first point). The enclosed surface region becomes a UV mask.
           </div>
         </div>
         <div class="info-section">
@@ -499,7 +500,6 @@ function installModel(rootObject, fileName) {
   }
 
   // Build the welded mesh graph for exp-map computations
-  originalMaterials = [];
   buildMeshGraph();
   buildVertexBases();
 
@@ -589,6 +589,9 @@ function recordHit(hit) {
     worldPos: hit.point.clone(),
     uv: uv ? uv.clone() : null,
     triangleIndex: hit.faceIndex,
+    triangleVertA: hit.face ? hit.face.a : -1,
+    triangleVertB: hit.face ? hit.face.b : -1,
+    triangleVertC: hit.face ? hit.face.c : -1,
     meshIndex: mesh.userData.uvpMeshIndex,
     barycentric: barycentric ? barycentric.clone() : null,
     marker3d,
@@ -604,35 +607,29 @@ function recordHit(hit) {
   document.getElementById('info-bary').textContent =
     barycentric ? `${barycentric.x.toFixed(3)}, ${barycentric.y.toFixed(3)}, ${barycentric.z.toFixed(3)}` : '—';
   document.getElementById('info-hit-count').textContent = state.hits.length;
+  document.getElementById('info-poly-points').textContent = state.hits.length;
 
-  // Run the discrete exp map from this point
-  if (meshGraph && hit.face) {
-    // Use the triangle's three welded vertices as candidates so we don't
-    // accidentally jump to a different nearby surface (e.g. mattress click
-    // grabbing a frame vertex because they're physically close).
-    const mesh = hit.object;
-    const meshIdx = mesh.userData.uvpMeshIndex;
-    const baseOffset = meshGraph.meshOffsets[meshIdx];
-    const wa = meshGraph.renderToWelded[baseOffset + hit.face.a];
-    const wb = meshGraph.renderToWelded[baseOffset + hit.face.b];
-    const wc = meshGraph.renderToWelded[baseOffset + hit.face.c];
-    const da = meshGraph.positions[wa].distanceToSquared(hit.point);
-    const db = meshGraph.positions[wb].distanceToSquared(hit.point);
-    const dc = meshGraph.positions[wc].distanceToSquared(hit.point);
-    let seedIdx;
-    if (da <= db && da <= dc) seedIdx = wa;
-    else if (db <= dc) seedIdx = wb;
-    else seedIdx = wc;
-
-    // Limit radius to a reasonable fraction of the model so we get a localized view
+  // Auto-close: if we have 3+ existing points and the new click landed
+  // close to the first point, treat it as a "close polygon" gesture.
+  if (state.hits.length >= 4) {
+    const first = state.hits[0].worldPos;
+    const justAdded = state.hits[state.hits.length - 1];
     const bbox = new THREE.Box3();
     for (const p of meshGraph.positions) bbox.expandByPoint(p);
     const modelSize = bbox.getSize(new THREE.Vector3()).length();
-    computeExpMap(seedIdx, modelSize * 0.5);
-    if (vizActive) applyDistanceColors();
+    const snapRadius = modelSize * 0.03;
+    if (justAdded.worldPos.distanceTo(first) < snapRadius) {
+      // Discard the snap click (it was meant as a "close" gesture, not a real point)
+      markerGroup.remove(justAdded.marker3d);
+      state.hits.pop();
+      document.getElementById('info-hit-count').textContent = state.hits.length;
+      document.getElementById('info-poly-points').textContent = state.hits.length;
+      closePolygon();
+      return;
+    }
   }
 
-  // Redraw UV view
+  // Redraw UV view (shows polygon dots in 2D)
   drawUVLayout();
 }
 
@@ -641,18 +638,19 @@ document.getElementById('clearHits').addEventListener('click', () => {
     if (h.marker3d) markerGroup.remove(h.marker3d);
   });
   state.hits = [];
+  clearPolygonViz();
   document.getElementById('info-hit-count').textContent = '0';
   document.getElementById('info-tri-idx').textContent = '—';
   document.getElementById('info-world').textContent = '—';
   document.getElementById('info-uv').textContent = '—';
   document.getElementById('info-bary').textContent = '—';
+  document.getElementById('info-poly-points').textContent = '0';
+  document.getElementById('info-poly-status').textContent = 'Drawing…';
+  document.getElementById('info-poly-tris').textContent = '—';
   document.getElementById('info-exptime').textContent = '—';
-  document.getElementById('info-reached').textContent = '—';
-  document.getElementById('info-maxdist').textContent = '—';
-  // Reset exp map state and restore materials
+  // Reset exp map state
   expMap.distance = null;
   expMap.uv2D = null;
-  clearDistanceColors();
   drawUVLayout();
 });
 
@@ -689,13 +687,13 @@ function drawUVLayout() {
     return;
   }
 
-  // Draw each triangle of each mesh
-  uvCtx.strokeStyle = 'rgba(255, 107, 26, 0.35)';
+  // Draw each triangle of each mesh — outline in muted color, fill if in polygon mask
   uvCtx.lineWidth = 0.5;
+  let triGlobal = 0;
   for (const mesh of state.loadedMeshes) {
     const geo = mesh.geometry;
     const uvAttr = geo.attributes.uv;
-    if (!uvAttr) continue;
+    if (!uvAttr) { continue; }
     const index = geo.index;
     const triCount = index ? index.count / 3 : uvAttr.count / 3;
     for (let i = 0; i < triCount; i++) {
@@ -708,12 +706,19 @@ function drawUVLayout() {
       const by = (1 - uvAttr.getY(b)) * H;
       const cx = uvAttr.getX(c) * W;
       const cy = (1 - uvAttr.getY(c)) * H;
+      const inMask = polygonState.triangleMembership && polygonState.triangleMembership[triGlobal];
       uvCtx.beginPath();
       uvCtx.moveTo(ax, ay);
       uvCtx.lineTo(bx, by);
       uvCtx.lineTo(cx, cy);
       uvCtx.closePath();
+      if (inMask) {
+        uvCtx.fillStyle = 'rgba(255, 107, 26, 0.85)';
+        uvCtx.fill();
+      }
+      uvCtx.strokeStyle = inMask ? 'rgba(255, 107, 26, 1)' : 'rgba(255, 107, 26, 0.18)';
       uvCtx.stroke();
+      triGlobal++;
     }
   }
 
@@ -871,7 +876,6 @@ function buildMeshGraph() {
   };
 
   document.getElementById('info-welded').textContent = weldedPositions.length.toLocaleString();
-  document.getElementById('info-edges').textContent = edgeCount.toLocaleString();
 }
 
 // Find welded vertex nearest to a world position (used after raycast)
@@ -1147,97 +1151,307 @@ function computeExpMap(seedIdx, maxRadius = Infinity) {
 }
 
 // =========================================================================
-// DISTANCE VISUALIZATION — color the mesh by geodesic distance
+// POLYGON CLOSING — the payoff
 // =========================================================================
-// We color each render vertex by its welded vertex's distance to the seed,
-// using a viridis-ish colormap. Blue = near, red = far, gray = unreached.
+// Once we have the user's clicked points, compute the polygon as follows:
+//   1. Centroid of the clicked 3D points
+//   2. Find nearest welded vertex to centroid → seed
+//   3. Run exp map ONCE from the seed across the whole model
+//   4. Each click point gets a 2D coord via barycentric interp of its triangle
+//   5. For every mesh triangle, test if its 2D centroid is inside the polygon
+//   6. Triangles inside the polygon form the mask
+//
+// Then render:
+//   - A translucent orange overlay mesh containing only the in-polygon triangles
+//   - A bright orange line loop connecting the polygon's 3D points (depthTest: false)
+//   - The 2D UV view highlights the same triangles in orange (the actual mask)
 
-let vizActive = true;
-let originalMaterials = [];  // cache materials so we can toggle off
+let polygonState = {
+  closed: false,
+  triangleMembership: null,  // Uint8Array per render-tri index: 1 if in polygon
+  polygonVerts2D: null,      // [[u,v], ...] in exp-map plane
+  expMapSeed: -1,
+};
 
-function colorRamp(t) {
-  // Smooth viridis-ish ramp, t in [0, 1]
-  // dark blue -> teal -> yellow -> red
-  t = Math.max(0, Math.min(1, t));
-  // Piecewise gradient
-  const stops = [
-    [0.00, 0.05, 0.10, 0.45],  // dark blue
-    [0.25, 0.10, 0.45, 0.60],  // teal-blue
-    [0.50, 0.20, 0.70, 0.40],  // teal-green
-    [0.70, 0.80, 0.80, 0.20],  // yellow
-    [1.00, 0.90, 0.30, 0.20],  // red
-  ];
-  for (let i = 0; i < stops.length - 1; i++) {
-    if (t >= stops[i][0] && t <= stops[i + 1][0]) {
-      const span = stops[i + 1][0] - stops[i][0];
-      const f = (t - stops[i][0]) / span;
-      return [
-        stops[i][1] + (stops[i + 1][1] - stops[i][1]) * f,
-        stops[i][2] + (stops[i + 1][2] - stops[i][2]) * f,
-        stops[i][3] + (stops[i + 1][3] - stops[i][3]) * f,
-      ];
+let fillMesh = null;
+let borderLineLoop = null;
+let vizFillVisible = true;
+
+function closePolygon() {
+  if (!meshGraph) return;
+  if (state.hits.length < 3) {
+    toast('Need at least 3 points');
+    return;
+  }
+  if (polygonState.closed) {
+    toast('Polygon already closed. Click "Clear All" to start over.');
+    return;
+  }
+
+  const t0 = performance.now();
+
+  // 1. Centroid of clicked 3D points
+  const centroid = new THREE.Vector3();
+  for (const h of state.hits) centroid.add(h.worldPos);
+  centroid.divideScalar(state.hits.length);
+
+  // 2. Find seed: nearest welded vertex to centroid (brute force, N=~640, fast)
+  let seedIdx = -1;
+  let bestD = Infinity;
+  for (let i = 0; i < meshGraph.positions.length; i++) {
+    const d = meshGraph.positions[i].distanceToSquared(centroid);
+    if (d < bestD) { bestD = d; seedIdx = i; }
+  }
+  polygonState.expMapSeed = seedIdx;
+
+  // 3. Run exp map (no radius limit — we want the whole model parameterized)
+  computeExpMap(seedIdx, Infinity);
+
+  // 4. Compute 2D position for each polygon vertex via barycentric interp
+  const polygonVerts2D = [];
+  for (const hit of state.hits) {
+    const baseOffset = meshGraph.meshOffsets[hit.meshIndex];
+    const wa = meshGraph.renderToWelded[baseOffset + hit.triangleVertA];
+    const wb = meshGraph.renderToWelded[baseOffset + hit.triangleVertB];
+    const wc = meshGraph.renderToWelded[baseOffset + hit.triangleVertC];
+    const bary = hit.barycentric;
+    // If any of the welded verts wasn't reached by exp map, fall back to nearest reached vert
+    const dA = expMap.distance[wa], dB = expMap.distance[wb], dC = expMap.distance[wc];
+    if (!isFinite(dA) || !isFinite(dB) || !isFinite(dC)) {
+      // shouldn't happen since exp map ran with infinite radius, but just in case
+      console.warn('Polygon point on unreached vertex');
+      polygonVerts2D.push([0, 0]);
+      continue;
+    }
+    const u = bary.x * expMap.uv2D[wa*2]   + bary.y * expMap.uv2D[wb*2]   + bary.z * expMap.uv2D[wc*2];
+    const v = bary.x * expMap.uv2D[wa*2+1] + bary.y * expMap.uv2D[wb*2+1] + bary.z * expMap.uv2D[wc*2+1];
+    polygonVerts2D.push([u, v]);
+  }
+  polygonState.polygonVerts2D = polygonVerts2D;
+
+  // 5. For every mesh triangle, test if its centroid is inside the polygon (in 2D)
+  // Build triangle membership array. Use a global triangle index across meshes.
+  let totalTris = 0;
+  for (const mesh of state.loadedMeshes) {
+    const geo = mesh.geometry;
+    const triCount = geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3;
+    totalTris += triCount;
+  }
+  const membership = new Uint8Array(totalTris);
+  let triGlobal = 0;
+  let insideCount = 0;
+  for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
+    const mesh = state.loadedMeshes[mi];
+    const geo = mesh.geometry;
+    const index = geo.index;
+    const posAttr = geo.attributes.position;
+    const triCount = index ? index.count / 3 : posAttr.count / 3;
+    const baseOffset = meshGraph.meshOffsets[mi];
+
+    for (let t = 0; t < triCount; t++) {
+      const ai = index ? index.getX(t * 3)     : t * 3;
+      const bi = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+      const ci = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+      const wa = meshGraph.renderToWelded[baseOffset + ai];
+      const wb = meshGraph.renderToWelded[baseOffset + bi];
+      const wc = meshGraph.renderToWelded[baseOffset + ci];
+
+      // If any vertex wasn't reached, skip (treat as outside)
+      if (!isFinite(expMap.distance[wa]) || !isFinite(expMap.distance[wb]) || !isFinite(expMap.distance[wc])) {
+        membership[triGlobal] = 0;
+        triGlobal++;
+        continue;
+      }
+
+      // Triangle centroid in 2D
+      const cu = (expMap.uv2D[wa*2] + expMap.uv2D[wb*2] + expMap.uv2D[wc*2]) / 3;
+      const cv = (expMap.uv2D[wa*2+1] + expMap.uv2D[wb*2+1] + expMap.uv2D[wc*2+1]) / 3;
+      if (pointInPolygon2D(cu, cv, polygonVerts2D)) {
+        membership[triGlobal] = 1;
+        insideCount++;
+      }
+      triGlobal++;
     }
   }
-  return [stops[stops.length - 1][1], stops[stops.length - 1][2], stops[stops.length - 1][3]];
+  polygonState.triangleMembership = membership;
+  polygonState.closed = true;
+
+  // 6. Build visualizations
+  buildFillMesh();
+  buildBorderLines();
+  drawUVLayout();  // redraw UV with the mask
+
+  const t1 = performance.now();
+  document.getElementById('info-poly-tris').textContent = insideCount + ' / ' + totalTris;
+  document.getElementById('info-poly-status').innerHTML = '<span style="color:var(--success);">Closed</span>';
+  document.getElementById('info-exptime').textContent = (t1 - t0).toFixed(1) + ' ms';
+
+  toast(`Polygon closed · ${insideCount} triangles masked`);
 }
 
-function applyDistanceColors() {
-  if (!meshGraph || !expMap.distance) return;
-  const maxD = expMap.maxDist;
-  if (maxD <= 0) return;
+// Standard ray-cast point-in-polygon test in 2D
+function pointInPolygon2D(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
 
+// Build a separate mesh containing ONLY the in-polygon triangles, translucent orange
+function buildFillMesh() {
+  if (fillMesh) {
+    scene.remove(fillMesh);
+    fillMesh.geometry.dispose();
+    fillMesh.material.dispose();
+    fillMesh = null;
+  }
+  if (!vizFillVisible) return;
+  if (!polygonState.triangleMembership) return;
+
+  // Collect triangle vertex positions (world space) for all in-polygon triangles
+  const positions = [];
+  const normals = [];
+  let triGlobal = 0;
   for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
     const mesh = state.loadedMeshes[mi];
     const geo = mesh.geometry;
     const posAttr = geo.attributes.position;
-    const baseOffset = meshGraph.meshOffsets[mi];
+    const normAttr = geo.attributes.normal;
+    const index = geo.index;
+    const triCount = index ? index.count / 3 : posAttr.count / 3;
+    mesh.updateMatrixWorld();
+    const m = mesh.matrixWorld;
+    const nm = new THREE.Matrix3().getNormalMatrix(m);
 
-    // Build or reuse color attribute
-    let colorAttr = geo.attributes.color;
-    if (!colorAttr || colorAttr.count !== posAttr.count) {
-      const arr = new Float32Array(posAttr.count * 3);
-      colorAttr = new THREE.BufferAttribute(arr, 3);
-      geo.setAttribute('color', colorAttr);
-    }
-
-    for (let i = 0; i < posAttr.count; i++) {
-      const wIdx = meshGraph.renderToWelded[baseOffset + i];
-      const d = expMap.distance[wIdx];
-      let rgb;
-      if (!isFinite(d)) {
-        rgb = [0.18, 0.18, 0.18];  // unreached = dark gray
-      } else {
-        rgb = colorRamp(d / maxD);
+    for (let t = 0; t < triCount; t++) {
+      if (polygonState.triangleMembership[triGlobal]) {
+        const ai = index ? index.getX(t * 3)     : t * 3;
+        const bi = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+        const ci = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+        for (const vi of [ai, bi, ci]) {
+          const p = new THREE.Vector3().fromBufferAttribute(posAttr, vi).applyMatrix4(m);
+          positions.push(p.x, p.y, p.z);
+          const n = new THREE.Vector3().fromBufferAttribute(normAttr, vi).applyMatrix3(nm).normalize();
+          normals.push(n.x, n.y, n.z);
+        }
       }
-      colorAttr.setXYZ(i, rgb[0], rgb[1], rgb[2]);
-    }
-    colorAttr.needsUpdate = true;
-
-    // Make material use vertex colors
-    if (!originalMaterials[mi]) originalMaterials[mi] = mesh.material;
-    mesh.material = new THREE.MeshStandardMaterial({
-      vertexColors: true,
-      roughness: 0.7,
-      metalness: 0.0,
-      flatShading: false,
-    });
-  }
-}
-
-function clearDistanceColors() {
-  for (let mi = 0; mi < state.loadedMeshes.length; mi++) {
-    const mesh = state.loadedMeshes[mi];
-    if (originalMaterials[mi]) {
-      mesh.material = originalMaterials[mi];
+      triGlobal++;
     }
   }
+  if (positions.length === 0) return;
+
+  // Offset positions slightly along their normal to avoid z-fighting with the underlying mesh
+  const offset = 0.002;  // small, scaled to model size below
+  const bbox = new THREE.Box3();
+  for (const p of meshGraph.positions) bbox.expandByPoint(p);
+  const modelSize = bbox.getSize(new THREE.Vector3()).length();
+  const actualOffset = modelSize * 0.001;
+  for (let i = 0; i < positions.length / 3; i++) {
+    positions[i*3]     += normals[i*3]     * actualOffset;
+    positions[i*3 + 1] += normals[i*3 + 1] * actualOffset;
+    positions[i*3 + 2] += normals[i*3 + 2] * actualOffset;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff6b1a,
+    transparent: true,
+    opacity: 0.5,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  fillMesh = new THREE.Mesh(geo, mat);
+  fillMesh.renderOrder = 1;
+  scene.add(fillMesh);
 }
+
+// Build a closed line loop connecting the polygon's 3D points
+function buildBorderLines() {
+  if (borderLineLoop) {
+    scene.remove(borderLineLoop);
+    borderLineLoop.geometry.dispose();
+    borderLineLoop.material.dispose();
+    borderLineLoop = null;
+  }
+  if (state.hits.length < 2) return;
+
+  // For each polygon point, lift it slightly along its triangle's normal
+  // so the line floats just above the surface (visually clearer than line through surface)
+  const positions = [];
+  const bbox = new THREE.Box3();
+  for (const p of meshGraph.positions) bbox.expandByPoint(p);
+  const modelSize = bbox.getSize(new THREE.Vector3()).length();
+  const lift = modelSize * 0.002;
+
+  for (const hit of state.hits) {
+    // Use the hit triangle's average normal direction for the lift
+    const mesh = state.loadedMeshes[hit.meshIndex];
+    const normAttr = mesh.geometry.attributes.normal;
+    const baseOffset = meshGraph.meshOffsets[hit.meshIndex];
+    // Get one of the triangle's normals (any of the three works)
+    const n = new THREE.Vector3().fromBufferAttribute(normAttr, hit.triangleVertA);
+    const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+    n.applyMatrix3(nm).normalize();
+    const p = hit.worldPos.clone().addScaledVector(n, lift);
+    positions.push(p.x, p.y, p.z);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({
+    color: 0xff6b1a,
+    linewidth: 2,        // most browsers cap at 1 but we set it anyway
+    depthTest: false,    // always visible on top of the surface
+    transparent: true,
+    opacity: 0.95,
+  });
+  borderLineLoop = new THREE.LineLoop(geo, mat);
+  borderLineLoop.renderOrder = 2;
+  scene.add(borderLineLoop);
+}
+
+function clearPolygonViz() {
+  if (fillMesh) {
+    scene.remove(fillMesh);
+    fillMesh.geometry.dispose();
+    fillMesh.material.dispose();
+    fillMesh = null;
+  }
+  if (borderLineLoop) {
+    scene.remove(borderLineLoop);
+    borderLineLoop.geometry.dispose();
+    borderLineLoop.material.dispose();
+    borderLineLoop = null;
+  }
+  polygonState.closed = false;
+  polygonState.triangleMembership = null;
+  polygonState.polygonVerts2D = null;
+}
+
+document.getElementById('closePolyBtn').addEventListener('click', closePolygon);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !polygonState.closed && state.hits.length >= 3) {
+    closePolygon();
+  }
+});
 
 document.getElementById('toggleVizBtn').addEventListener('click', () => {
-  vizActive = !vizActive;
-  document.getElementById('toggleVizBtn').textContent = vizActive ? 'Hide Distance Viz' : 'Show Distance Viz';
-  if (vizActive && expMap.distance) applyDistanceColors();
-  else clearDistanceColors();
+  vizFillVisible = !vizFillVisible;
+  document.getElementById('toggleVizBtn').textContent = vizFillVisible ? 'Hide Fill' : 'Show Fill';
+  if (vizFillVisible) buildFillMesh();
+  else if (fillMesh) {
+    scene.remove(fillMesh);
+    fillMesh.geometry.dispose();
+    fillMesh.material.dispose();
+    fillMesh = null;
+  }
 });
 
 // =========================================================================
