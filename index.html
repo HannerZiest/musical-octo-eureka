@@ -606,16 +606,30 @@ function recordHit(hit) {
   document.getElementById('info-hit-count').textContent = state.hits.length;
 
   // Run the discrete exp map from this point
-  if (meshGraph) {
-    const seedIdx = nearestWeldedVertex(hit.point);
-    if (seedIdx >= 0) {
-      // Limit radius to a reasonable fraction of the model so we get a localized view
-      const bbox = new THREE.Box3();
-      for (const p of meshGraph.positions) bbox.expandByPoint(p);
-      const modelSize = bbox.getSize(new THREE.Vector3()).length();
-      computeExpMap(seedIdx, modelSize * 0.5);
-      if (vizActive) applyDistanceColors();
-    }
+  if (meshGraph && hit.face) {
+    // Use the triangle's three welded vertices as candidates so we don't
+    // accidentally jump to a different nearby surface (e.g. mattress click
+    // grabbing a frame vertex because they're physically close).
+    const mesh = hit.object;
+    const meshIdx = mesh.userData.uvpMeshIndex;
+    const baseOffset = meshGraph.meshOffsets[meshIdx];
+    const wa = meshGraph.renderToWelded[baseOffset + hit.face.a];
+    const wb = meshGraph.renderToWelded[baseOffset + hit.face.b];
+    const wc = meshGraph.renderToWelded[baseOffset + hit.face.c];
+    const da = meshGraph.positions[wa].distanceToSquared(hit.point);
+    const db = meshGraph.positions[wb].distanceToSquared(hit.point);
+    const dc = meshGraph.positions[wc].distanceToSquared(hit.point);
+    let seedIdx;
+    if (da <= db && da <= dc) seedIdx = wa;
+    else if (db <= dc) seedIdx = wb;
+    else seedIdx = wc;
+
+    // Limit radius to a reasonable fraction of the model so we get a localized view
+    const bbox = new THREE.Box3();
+    for (const p of meshGraph.positions) bbox.expandByPoint(p);
+    const modelSize = bbox.getSize(new THREE.Vector3()).length();
+    computeExpMap(seedIdx, modelSize * 0.5);
+    if (vizActive) applyDistanceColors();
   }
 
   // Redraw UV view
