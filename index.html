@@ -1233,14 +1233,28 @@ function closePolygon() {
     const d = h.worldPos.distanceTo(seedPos);
     if (d > maxClickDist) maxClickDist = d;
   }
-  // Model scale for a tiny epsilon (in case the polygon is degenerately small)
+  // Compute average mesh edge length, used to pick a sane exp-map radius
+  // and inclusion radius below.
   const bbox = new THREE.Box3();
   for (const p of meshGraph.positions) bbox.expandByPoint(p);
   const modelSize = bbox.getSize(new THREE.Vector3()).length();
-  // Tighter radius: 1.5x lower-bound (Euclidean) covers ~all triangles whose
-  // vertices we care about, without including far-away vertices that would
-  // contribute exp-map distortion / wraparound false positives.
-  const radius = maxClickDist * 1.5 + modelSize * 0.001;
+
+  let totalEdgeLenA = 0, edgeSampleCountA = 0;
+  for (let i = 0; i < meshGraph.positions.length; i++) {
+    const neighbors = meshGraph.adjacency[i];
+    for (const j of neighbors) {
+      if (j > i) {
+        totalEdgeLenA += meshGraph.positions[i].distanceTo(meshGraph.positions[j]);
+        edgeSampleCountA++;
+      }
+    }
+  }
+  const meshEdgeAvg = edgeSampleCountA > 0 ? totalEdgeLenA / edgeSampleCountA : modelSize * 0.05;
+
+  // Run exp map with a radius covering the polygon + several mesh edges of
+  // headroom, so even huge triangles surrounding the polygon get their
+  // vertices reached.
+  const radius = Math.max(maxClickDist * 1.5, maxClickDist + meshEdgeAvg * 4) + modelSize * 0.001;
 
   // 4. Run exp map with the local radius
   computeExpMap(seedIdx, radius);
@@ -1269,10 +1283,10 @@ function closePolygon() {
   }
   polygonState.polygonVerts2D = polygonVerts2D;
 
-  // The inclusion radius is the polygon's own geodesic extent (max distance
-  // from seed to any polygon vertex in 2D space) plus a small buffer. Any
-  // triangle vertex with geodesic distance > this is automatically excluded.
-  const inclusionRadius = polygonMaxRadius2D * 1.3;
+  // The inclusion radius is the polygon's own geodesic extent plus a buffer
+  // sized to the mesh's average edge length. This ensures large triangles
+  // that the polygon sits inside don't get excluded for being "too far".
+  const inclusionRadius = polygonMaxRadius2D + meshEdgeAvg * 2;
 
   // 6. For every mesh triangle, test if it overlaps the polygon.
   // Multi-point test: include if centroid OR any of the 3 vertices is inside
@@ -1308,9 +1322,20 @@ function closePolygon() {
       const dB = expMap.distance[wb];
       const dC = expMap.distance[wc];
 
-      // Skip if any vertex unreached or beyond inclusion radius
-      if (!isFinite(dA) || !isFinite(dB) || !isFinite(dC) ||
-          dA > inclusionRadius || dB > inclusionRadius || dC > inclusionRadius) {
+      // Skip if NO vertex is reached or all are beyond inclusion radius.
+      // This is more lenient: a "straddler" triangle with one nearby and
+      // one far vertex is kept.
+      const reachedA = isFinite(dA) && dA <= inclusionRadius;
+      const reachedB = isFinite(dB) && dB <= inclusionRadius;
+      const reachedC = isFinite(dC) && dC <= inclusionRadius;
+      if (!reachedA && !reachedB && !reachedC) {
+        membership[triGlobal] = 0;
+        triGlobal++;
+        continue;
+      }
+      // If any vertex is unreached (distance is Infinity), we can't trust
+      // its 2D coords — skip the triangle to avoid false positives.
+      if (!isFinite(dA) || !isFinite(dB) || !isFinite(dC)) {
         membership[triGlobal] = 0;
         triGlobal++;
         continue;
@@ -1319,17 +1344,8 @@ function closePolygon() {
       const ua = expMap.uv2D[wa*2], va = expMap.uv2D[wa*2+1];
       const ub = expMap.uv2D[wb*2], vb = expMap.uv2D[wb*2+1];
       const uc = expMap.uv2D[wc*2], vc = expMap.uv2D[wc*2+1];
-      const cu = (ua + ub + uc) / 3;
-      const cv = (va + vb + vc) / 3;
 
-      // Include if centroid OR any vertex is inside polygon
-      const hit =
-        pointInPolygon2D(cu, cv, polygonVerts2D) ||
-        pointInPolygon2D(ua, va, polygonVerts2D) ||
-        pointInPolygon2D(ub, vb, polygonVerts2D) ||
-        pointInPolygon2D(uc, vc, polygonVerts2D);
-
-      if (hit) {
+      if (triangleOverlapsPolygon(ua, va, ub, vb, uc, vc, polygonVerts2D)) {
         membership[triGlobal] = 1;
         insideCount++;
       }
@@ -1363,6 +1379,36 @@ function pointInPolygon2D(x, y, poly) {
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+// Sign-based point-in-triangle test (2D)
+function pointInTriangle2D(px, py, ax, ay, bx, by, cx, cy) {
+  const d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by);
+  const d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy);
+  const d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay);
+  const hasNeg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  const hasPos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  return !(hasNeg && hasPos);
+}
+
+// 2D triangle-polygon overlap: covers all reasonable cases.
+// - Big polygon containing small triangle: triangle vertex inside polygon → true
+// - Small polygon inside huge triangle: polygon vertex inside triangle → true
+// - Similar-size overlap: centroid test catches it
+function triangleOverlapsPolygon(ua, va, ub, vb, uc, vc, poly) {
+  // Triangle vertices inside polygon
+  if (pointInPolygon2D(ua, va, poly)) return true;
+  if (pointInPolygon2D(ub, vb, poly)) return true;
+  if (pointInPolygon2D(uc, vc, poly)) return true;
+  // Triangle centroid inside polygon
+  const cu = (ua + ub + uc) / 3;
+  const cv = (va + vb + vc) / 3;
+  if (pointInPolygon2D(cu, cv, poly)) return true;
+  // Polygon vertices inside triangle (the case that broke before)
+  for (const p of poly) {
+    if (pointInTriangle2D(p[0], p[1], ua, va, ub, vb, uc, vc)) return true;
+  }
+  return false;
 }
 
 // Build a separate mesh containing ONLY the in-polygon triangles, translucent orange
